@@ -18,6 +18,7 @@ bundle: build
 	@mkdir -p "$(APP_BUNDLE)/Contents/Resources"
 	@cp "$(BINARY)" "$(APP_BUNDLE)/Contents/MacOS/$(APP_NAME)"
 	@cp Info.plist "$(APP_BUNDLE)/Contents/Info.plist"
+	@codesign --force --deep --sign - "$(APP_BUNDLE)"
 	@echo "Built $(APP_BUNDLE)"
 
 # ── Install to /Applications ─────────────────────────────────────────

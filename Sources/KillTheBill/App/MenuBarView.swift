@@ -221,8 +221,7 @@ struct MenuBarView: View {
                             .lineLimit(1)
                         Spacer()
                         if showEvents {
-                            Text("\(m.turnCount) ev.")
-                                .font(.system(.caption, design: .monospaced, weight: .medium))
+                            eventCountLabel(m.turnCount)
                         } else {
                             Text(formatCurrency(m.costUSD))
                                 .font(.system(.caption, design: .monospaced, weight: .medium))
@@ -257,8 +256,7 @@ struct MenuBarView: View {
                             .truncationMode(.middle)
                         Spacer()
                         if showEvents {
-                            Text("\(ws.turnCount) ev.")
-                                .font(.system(.caption, design: .monospaced, weight: .medium))
+                            eventCountLabel(ws.turnCount)
                         } else {
                             Text(formatCurrency(ws.costUSD))
                                 .font(.system(.caption, design: .monospaced, weight: .medium))
@@ -340,6 +338,16 @@ struct MenuBarView: View {
     }
 
     private func formatCurrency(_ value: Double) -> String { String(format: "$%.2f", value) }
+
+    private func eventCountLabel(_ count: Int) -> some View {
+        HStack(spacing: 2) {
+            Text("\(count)")
+                .foregroundStyle(.primary)
+            Text("ev.")
+                .foregroundStyle(Color.secondary.opacity(0.9))
+        }
+        .font(.system(.caption, design: .monospaced, weight: .medium))
+    }
 
     private func formatTokens(_ count: Int) -> String {
         if count >= 1_000_000 { return String(format: "%.1fM", Double(count) / 1_000_000) }

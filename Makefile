@@ -3,6 +3,12 @@ BUILD_DIR   := .build/arm64-apple-macosx/release
 BINARY      := $(BUILD_DIR)/$(APP_NAME)
 APP_BUNDLE  := $(BUILD_DIR)/$(APP_NAME).app
 INSTALL_DIR := /Applications
+SIGNING_IDENTITY ?= -
+CODESIGN_FLAGS := --force --deep --sign "$(SIGNING_IDENTITY)"
+
+ifneq ($(SIGNING_IDENTITY),-)
+CODESIGN_FLAGS += --options runtime --timestamp
+endif
 
 # ── Build ────────────────────────────────────────────────────────────
 
@@ -18,7 +24,7 @@ bundle: build
 	@mkdir -p "$(APP_BUNDLE)/Contents/Resources"
 	@cp "$(BINARY)" "$(APP_BUNDLE)/Contents/MacOS/$(APP_NAME)"
 	@cp Info.plist "$(APP_BUNDLE)/Contents/Info.plist"
-	@codesign --force --deep --sign - "$(APP_BUNDLE)"
+	@codesign $(CODESIGN_FLAGS) "$(APP_BUNDLE)"
 	@echo "Built $(APP_BUNDLE)"
 
 # ── Install to /Applications ─────────────────────────────────────────

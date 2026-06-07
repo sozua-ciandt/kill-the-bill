@@ -37,6 +37,33 @@ brew uninstall --cask kill-the-bill
 make uninstall
 ```
 
+## Release signing
+
+Homebrew installs preserve macOS quarantine attributes. Public releases must be
+Developer ID signed and notarized so users can open the app without `xattr` or
+Privacy & Security overrides.
+
+The release workflow expects these GitHub Actions secrets:
+
+```text
+APPLE_DEVELOPER_ID_CERTIFICATE_BASE64
+APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD
+APPLE_SIGNING_IDENTITY
+APPLE_ID
+APPLE_TEAM_ID
+APPLE_APP_SPECIFIC_PASSWORD
+```
+
+`APPLE_DEVELOPER_ID_CERTIFICATE_BASE64` is a base64-encoded `.p12` export of a
+Developer ID Application certificate. `APPLE_SIGNING_IDENTITY` should match that
+certificate name, for example `Developer ID Application: Example LLC (TEAMID)`.
+`APPLE_APP_SPECIFIC_PASSWORD` is the app-specific password used by `notarytool`
+for the Apple ID in `APPLE_ID`.
+
+After those secrets are configured, pushing a `v*` tag signs the `.app` with the
+hardened runtime, notarizes it, staples the notarization ticket, zips the stapled
+bundle, and publishes the GitHub release asset.
+
 ## How it works
 
 Claude Code writes JSONL transcripts to `~/.claude/projects/`, and Codex writes session JSONL files to `~/.codex/sessions/`. _Kill the Bill_ reads both, aggregates token usage by project and model, and estimates cost from `models.dev` pricing when available, with local custom overrides.

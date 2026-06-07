@@ -24,6 +24,7 @@ struct MenuBarView: View {
         }
         .padding(16)
         .frame(width: 340)
+        .id(showEvents)
     }
 
     // MARK: - Header

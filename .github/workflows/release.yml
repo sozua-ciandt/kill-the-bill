@@ -9,12 +9,28 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  release:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate signing secrets
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+            gh release edit "${{ github.ref_name }}" \
+              --title "Kill the Bill ${{ github.ref_name }}" \
+              --latest
+          else
+            gh release create "${{ github.ref_name }}" \
+              --title "Kill the Bill ${{ github.ref_name }}" \
+              --generate-notes \
+              --latest
+          fi
+
+      - name: Check signing secrets
+        id: signing
         env:
           APPLE_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_BASE64 }}
           APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
@@ -23,14 +39,20 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
-          test -n "$APPLE_DEVELOPER_ID_CERTIFICATE_BASE64"
-          test -n "$APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD"
-          test -n "$APPLE_SIGNING_IDENTITY"
-          test -n "$APPLE_ID"
-          test -n "$APPLE_TEAM_ID"
-          test -n "$APPLE_APP_SPECIFIC_PASSWORD"
+          if [ -n "$APPLE_DEVELOPER_ID_CERTIFICATE_BASE64" ] \
+            && [ -n "$APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD" ] \
+            && [ -n "$APPLE_SIGNING_IDENTITY" ] \
+            && [ -n "$APPLE_ID" ] \
+            && [ -n "$APPLE_TEAM_ID" ] \
+            && [ -n "$APPLE_APP_SPECIFIC_PASSWORD" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Apple signing secrets are not configured; publishing source-only release for curl installer."
+          fi
 
       - name: Import Developer ID certificate
+        if: steps.signing.outputs.available == 'true'
         env:
           APPLE_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_BASE64 }}
           APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
@@ -53,22 +75,27 @@ jobs:
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
       - name: Build release binary
+        if: steps.signing.outputs.available == 'true'
         run: swift build -c release
 
       - name: Bundle .app
+        if: steps.signing.outputs.available == 'true'
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: make bundle SIGNING_IDENTITY="$APPLE_SIGNING_IDENTITY"
 
       - name: Verify signature
+        if: steps.signing.outputs.available == 'true'
         run: codesign --verify --deep --strict --verbose=2 .build/arm64-apple-macosx/release/KillTheBill.app
 
       - name: Zip app bundle for notarization
+        if: steps.signing.outputs.available == 'true'
         run: |
           cd .build/arm64-apple-macosx/release
           ditto -c -k --keepParent KillTheBill.app KillTheBill.app.zip
 
       - name: Notarize app bundle
+        if: steps.signing.outputs.available == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -81,26 +108,28 @@ jobs:
             --wait
 
       - name: Staple notarization ticket
+        if: steps.signing.outputs.available == 'true'
         run: |
           xcrun stapler staple .build/arm64-apple-macosx/release/KillTheBill.app
           xcrun stapler validate .build/arm64-apple-macosx/release/KillTheBill.app
           spctl --assess --type execute --verbose=4 .build/arm64-apple-macosx/release/KillTheBill.app
 
       - name: Zip notarized app bundle
+        if: steps.signing.outputs.available == 'true'
         run: |
           cd .build/arm64-apple-macosx/release
           rm KillTheBill.app.zip
           ditto -c -k --keepParent KillTheBill.app KillTheBill.app.zip
 
-      - name: Create GitHub Release
+      - name: Upload notarized app
+        if: steps.signing.outputs.available == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ github.ref_name }}" \
+          gh release upload "${{ github.ref_name }}" \
             .build/arm64-apple-macosx/release/KillTheBill.app.zip \
-            --title "Kill the Bill ${{ github.ref_name }}" \
-            --generate-notes
+            --clobber
 
       - name: Delete temporary keychain
-        if: always()
+        if: always() && steps.signing.outputs.available == 'true'
         run: security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" || true

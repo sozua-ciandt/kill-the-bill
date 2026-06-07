@@ -5,18 +5,16 @@ Track Claude Code and Codex token usage and cost from your macOS menu bar by rea
 ## Install
 
 ```bash
-brew tap sozua-ciandt/tap
-brew install --cask kill-the-bill
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/sozua-ciandt/kill-the-bill/main/install.sh)"
 ```
 
-If Homebrew requires trust for third-party taps, prefer trusting only this cask:
+The installer downloads the source, builds the app locally, and installs
+`KillTheBill.app` into `/Applications`. If administrator permission is not
+available, it installs into `~/Applications` instead.
 
-```bash
-brew trust --cask sozua-ciandt/tap/kill-the-bill
-```
-
-If macOS blocks the app because it was downloaded from the internet, approve it in
-System Settings > Privacy & Security after the install.
+Requires macOS 14+ and Xcode Command Line Tools. If the command line tools are
+missing, the installer will open Apple's installer and ask you to run the command
+again after it finishes.
 
 ## Build from source
 
@@ -32,16 +30,17 @@ make run       # runs without installing
 ## Uninstall
 
 ```bash
-brew uninstall --cask kill-the-bill
-# or from source:
-make uninstall
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/sozua-ciandt/kill-the-bill/main/uninstall.sh)"
 ```
 
 ## Release signing
 
-Homebrew installs preserve macOS quarantine attributes. Public releases must be
-Developer ID signed and notarized so users can open the app without `xattr` or
-Privacy & Security overrides.
+Prebuilt downloads and Homebrew cask installs preserve macOS quarantine
+attributes. Public prebuilt releases must be Developer ID signed and notarized
+so users can open the app without `xattr` or Privacy & Security overrides.
+
+The curl installer above avoids that requirement by building the app locally on
+the user's Mac before copying it to Applications.
 
 The release workflow expects these GitHub Actions secrets:
 

@@ -9,5 +9,10 @@ let package = Package(
             name: "KillTheBill",
             path: "Sources/KillTheBill"
         ),
+        .testTarget(
+            name: "KillTheBillTests",
+            dependencies: ["KillTheBill"],
+            path: "Tests/KillTheBillTests"
+        ),
     ]
 )

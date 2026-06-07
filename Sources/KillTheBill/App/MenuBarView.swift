@@ -15,6 +15,9 @@ struct MenuBarView: View {
                 Divider()
             }
             tokenSection
+            if store.usage.hasUnpricedUsage {
+                unpricedWarning
+            }
             Divider()
             modelSection
             Divider()
@@ -89,6 +92,22 @@ struct MenuBarView: View {
     }
 
     // MARK: - Tokens
+
+    private var unpricedWarning: some View {
+        Text("Cost unavailable for some usage. Add or update provider rules in \(providerDirectoryLabel).")
+            .font(.caption2)
+            .foregroundStyle(Color.secondary.opacity(0.55))
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var providerDirectoryLabel: String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let path = store.providerDirectory.path
+        if path.hasPrefix(home) {
+            return "~" + path.dropFirst(home.count)
+        }
+        return path
+    }
 
     private var tokenSection: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -277,7 +296,7 @@ struct MenuBarView: View {
                 Spacer()
 
                 if let sources = store.sources {
-                    Text("\(sources.transcriptDirs.count) projects")
+                    Text(sources.sourceCount == 1 ? "1 source" : "\(sources.sourceCount) sources")
                         .font(.caption2)
                         .foregroundStyle(.quaternary)
                 }

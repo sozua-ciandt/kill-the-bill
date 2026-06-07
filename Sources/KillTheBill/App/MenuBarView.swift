@@ -94,7 +94,7 @@ struct MenuBarView: View {
     // MARK: - Tokens
 
     private var unpricedWarning: some View {
-        Text("Cost unavailable for some usage. Add or update provider rules in \(providerDirectoryLabel).")
+        Text("Subscription fees are not tracked. Costs only estimate token-priced usage; add provider rules in \(providerDirectoryLabel) for custom billable events.")
             .font(.caption2)
             .foregroundStyle(Color.secondary.opacity(0.55))
             .fixedSize(horizontal: false, vertical: true)

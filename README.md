@@ -6,8 +6,17 @@ Track Claude Code and Codex token usage and cost from your macOS menu bar by rea
 
 ```bash
 brew tap sozua-ciandt/tap
-brew install --cask --no-quarantine kill-the-bill
+brew install --cask kill-the-bill
 ```
+
+If Homebrew requires trust for third-party taps, prefer trusting only this cask:
+
+```bash
+brew trust --cask sozua-ciandt/tap/kill-the-bill
+```
+
+If macOS blocks the app because it was downloaded from the internet, approve it in
+System Settings > Privacy & Security after the install.
 
 ## Build from source
 

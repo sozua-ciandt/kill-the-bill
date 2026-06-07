@@ -32,4 +32,25 @@ jobs:
           gh release create "${{ github.ref_name }}" \
             .build/arm64-apple-macosx/release/KillTheBill.app.zip \
             --title "Kill the Bill ${{ github.ref_name }}" \
-            --generate-notes
+            --generate-notes \
+            --clobber
+
+      - name: Update Homebrew cask
+        env:
+          GH_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION_BARE="${VERSION#v}"
+          SHA256=$(shasum -a 256 .build/arm64-apple-macosx/release/KillTheBill.app.zip | awk '{print $1}')
+
+          git clone https://x-access-token:${GH_TOKEN}@github.com/sozua-ciandt/homebrew-tap.git
+          cd homebrew-tap
+
+          sed -i '' "s/version \".*\"/version \"${VERSION_BARE}\"/" Casks/kill-the-bill.rb
+          sed -i '' "s/sha256 \".*\"/sha256 \"${SHA256}\"/" Casks/kill-the-bill.rb
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/kill-the-bill.rb
+          git commit -m "kill-the-bill ${VERSION_BARE}"
+          git push

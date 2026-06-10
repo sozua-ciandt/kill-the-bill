@@ -2,6 +2,8 @@
 
 Track Claude Code and Codex token usage and cost from your macOS menu bar.
 
+![Kill the Bill screenshot](assets/screenshot.png)
+
 ## Install
 
 ```bash

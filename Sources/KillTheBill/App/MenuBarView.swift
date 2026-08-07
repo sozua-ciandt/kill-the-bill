@@ -5,15 +5,18 @@ struct MenuBarView: View {
     @Binding var launchAtLogin: Bool
     @Binding var showEvents: Bool
     @AppStorage("monthlyEventLimit") private var monthlyEventLimit: Int = 6000
+    @AppStorage("monthlyCostLimit") private var monthlyCostLimit: Double = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
             Divider()
             if showEvents {
-                monthlySection
-                Divider()
+                monthlyEventsSection
+            } else {
+                monthlyCostSection
             }
+            Divider()
             tokenSection
             if store.usage.hasUnpricedUsage {
                 unpricedWarning
@@ -39,7 +42,7 @@ struct MenuBarView: View {
                 .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(showEvents ? "Today's Events" : "Today's Cost")
+                Text(showEvents ? "Today's Events" : "This Month's Cost")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if showEvents {
@@ -47,9 +50,12 @@ struct MenuBarView: View {
                         .font(.system(.title, design: .rounded, weight: .bold))
                         .foregroundStyle(eventsColor)
                 } else {
-                    Text(formatCurrency(store.usage.totalCostUSD))
+                    Text(formatCurrency(store.usage.monthlyCostUSD))
                         .font(.system(.title, design: .rounded, weight: .bold))
                         .foregroundStyle(costColor)
+                    Text("today: " + formatCurrency(store.usage.totalCostUSD))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -60,7 +66,7 @@ struct MenuBarView: View {
                     Text("\(store.usage.sessionCount) sessions")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text(showEvents ? "\(store.usage.turnCount) events" : "\(store.usage.turnCount) events")
+                    Text("\(store.usage.turnCount) events")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -152,16 +158,15 @@ struct MenuBarView: View {
         .frame(maxWidth: .infinity)
     }
 
-    // MARK: - Monthly
+    // MARK: - Monthly Events
 
-    private var monthlySection: some View {
+    private var monthlyEventsSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("This Month")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                // Inline editable limit
                 HStack(spacing: 2) {
                     Text("limit:")
                         .font(.caption2)
@@ -195,6 +200,60 @@ struct MenuBarView: View {
         }
     }
 
+    // MARK: - Monthly Cost
+
+    private var monthlyCostSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("This Month")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                HStack(spacing: 2) {
+                    Text("limit $:")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    TextField("0", value: $monthlyCostLimit, format: .number)
+                        .font(.system(.caption2, design: .monospaced))
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 48)
+                        .textFieldStyle(.plain)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if let p = costLimitProgress {
+                ProgressView(value: p.fraction)
+                    .tint(progressColor(p.fraction))
+                    .scaleEffect(x: 1, y: 1.5)
+
+                HStack {
+                    Text(formatCurrency(p.used) + " used")
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(formatCurrency(p.remaining) + " remaining")
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(progressColor(p.fraction))
+                }
+            }
+        }
+    }
+
+    private struct CostProgress {
+        let used: Double
+        let remaining: Double
+        let fraction: Double
+    }
+
+    private var costLimitProgress: CostProgress? {
+        guard monthlyCostLimit > 0 else { return nil }
+        let used = store.usage.monthlyCostUSD
+        let limit = max(monthlyCostLimit, 0.01)
+        let fraction = min(used / limit, 1.0)
+        return CostProgress(used: used, remaining: max(limit - used, 0), fraction: fraction)
+    }
+
     private func progressColor(_ progress: Double) -> Color {
         if progress < 0.6 { return .green }
         if progress < 0.85 { return .orange }
@@ -223,8 +282,7 @@ struct MenuBarView: View {
                         if showEvents {
                             eventCountLabel(m.turnCount)
                         } else {
-                            Text(formatCurrency(m.costUSD))
-                                .font(.system(.caption, design: .monospaced, weight: .medium))
+                            costDailyMonthlyLabel(daily: m.costUSD, monthly: m.monthlyCostUSD)
                         }
                     }
                 }
@@ -258,8 +316,7 @@ struct MenuBarView: View {
                         if showEvents {
                             eventCountLabel(ws.turnCount)
                         } else {
-                            Text(formatCurrency(ws.costUSD))
-                                .font(.system(.caption, design: .monospaced, weight: .medium))
+                            costDailyMonthlyLabel(daily: ws.costUSD, monthly: ws.monthlyCostUSD)
                         }
                     }
                 }
@@ -324,9 +381,9 @@ struct MenuBarView: View {
     // MARK: - Formatting
 
     private var costColor: Color {
-        let c = store.usage.totalCostUSD
-        if c < 5 { return .green }
-        if c < 20 { return .orange }
+        let c = store.usage.monthlyCostUSD
+        if c < 50 { return .green }
+        if c < 150 { return .orange }
         return .red
     }
 
@@ -347,6 +404,19 @@ struct MenuBarView: View {
                 .foregroundStyle(Color.secondary.opacity(0.9))
         }
         .font(.system(.caption, design: .monospaced, weight: .medium))
+    }
+
+    private func costDailyMonthlyLabel(daily: Double, monthly: Double) -> some View {
+        HStack(spacing: 2) {
+            Text(formatCurrency(daily))
+                .foregroundStyle(.primary)
+            Text("/")
+                .foregroundStyle(Color.secondary.opacity(0.5))
+            Text(formatCurrency(monthly))
+                .foregroundStyle(.secondary)
+        }
+        .font(.system(.caption2, design: .monospaced, weight: .medium))
+        .accessibilityLabel("\(formatCurrency(daily)) today, \(formatCurrency(monthly)) this month")
     }
 
     private func formatTokens(_ count: Int) -> String {

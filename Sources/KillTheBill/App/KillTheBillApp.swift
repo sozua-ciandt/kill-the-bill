@@ -31,16 +31,16 @@ struct KillTheBillApp: App {
     }
 
     private var costLabel: String {
-        let cost = store.usage.totalCostUSD
-        if cost == 0 { return "$0" }
-        if cost < 1 { return String(format: "$%.2f", cost) }
-        return String(format: "$%.1f", cost)
+        let cost = store.usage.monthlyCostUSD
+        if cost == 0 { return "$0/mo" }
+        if cost < 1 { return String(format: "$%.2f/mo", cost) }
+        return String(format: "$%.1f/mo", cost)
     }
 
     private var costColor: Color {
-        let cost = store.usage.totalCostUSD
-        if cost < 5 { return .green }
-        if cost < 20 { return .orange }
+        let cost = store.usage.monthlyCostUSD
+        if cost < 50 { return .green }
+        if cost < 150 { return .orange }
         return .red
     }
 

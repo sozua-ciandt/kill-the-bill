@@ -4,6 +4,7 @@ struct WorkspaceUsage: Identifiable, Sendable {
     let id: String
     var displayName: String
     var costUSD: Double
+    var monthlyCostUSD: Double = 0
     var inputTokens: Int
     var outputTokens: Int
     var cacheWriteTokens: Int
@@ -16,12 +17,16 @@ struct WorkspaceUsage: Identifiable, Sendable {
 struct ModelUsage: Identifiable, Sendable {
     let id: String
     var costUSD: Double
+    var monthlyCostUSD: Double = 0
     var turnCount: Int
     var unpricedTurnCount: Int
 }
 
+// Holds today's usage in most fields. monthlyCostUSD, monthlyTurnCount, and the
+// perWorkspace/perModel lists are overwritten with month-to-date values after load.
 struct DailyUsage: Sendable {
     var totalCostUSD: Double = 0
+    var monthlyCostUSD: Double = 0
     var inputTokens: Int = 0
     var outputTokens: Int = 0
     var cacheWriteTokens: Int = 0
@@ -44,6 +49,7 @@ struct DailyUsage: Sendable {
 
         for usage in usages {
             combined.totalCostUSD += usage.totalCostUSD
+            combined.monthlyCostUSD += usage.monthlyCostUSD
             combined.inputTokens += usage.inputTokens
             combined.outputTokens += usage.outputTokens
             combined.cacheWriteTokens += usage.cacheWriteTokens
@@ -57,6 +63,7 @@ struct DailyUsage: Sendable {
             for workspace in usage.perWorkspace {
                 if var existing = workspaces[workspace.id] {
                     existing.costUSD += workspace.costUSD
+                    existing.monthlyCostUSD += workspace.monthlyCostUSD
                     existing.inputTokens += workspace.inputTokens
                     existing.outputTokens += workspace.outputTokens
                     existing.cacheWriteTokens += workspace.cacheWriteTokens
@@ -73,6 +80,7 @@ struct DailyUsage: Sendable {
             for model in usage.perModel {
                 if var existing = models[model.id] {
                     existing.costUSD += model.costUSD
+                    existing.monthlyCostUSD += model.monthlyCostUSD
                     existing.turnCount += model.turnCount
                     existing.unpricedTurnCount += model.unpricedTurnCount
                     models[model.id] = existing

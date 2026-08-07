@@ -9,6 +9,7 @@ private struct TranscriptEntry: Decodable {
 }
 
 private struct MessageBlock: Decodable {
+    let id: String?
     let role: String?
     let model: String?
     let usage: UsageBlock?
@@ -26,12 +27,21 @@ private struct UsageBlock: Decodable {
 enum ClaudeLogParser {
 
     static func parseTranscripts(dirs: [URL], files: [URL], pricing: ModelPricing) -> DailyUsage {
-        var accumulator = UsageAccumulator()
+        parseTranscripts(dirs: dirs, files: files, pricing: pricing, dateFilter: nil)
+    }
 
+    static func parseTranscripts(
+        dirs: [URL],
+        files: [URL],
+        pricing: ModelPricing,
+        dateFilter: DateComponents?
+    ) -> DailyUsage {
+        var accumulator = UsageAccumulator()
         let decoder = JSONDecoder()
+        let calendar = Calendar.current
 
         for file in files {
-            let parentDir = file.deletingLastPathComponent().lastPathComponent
+            let parentDir = projectDirName(for: file, in: dirs)
             let projectName = LogScanner.projectName(from: parentDir)
             accumulator.registerSession(file, workspaceID: projectName, displayName: projectName)
 
@@ -47,12 +57,20 @@ enum ClaudeLogParser {
                       let msg = entry.message,
                       let usage = msg.usage else { continue }
 
+                // Filter by timestamp when a date is specified; fall through if no timestamp.
+                if let filter = dateFilter, let ts = entry.timestamp {
+                    guard let date = ParserHelpers.parseISO8601(ts),
+                          ParserHelpers.matchesFilter(date, filter: filter, calendar: calendar)
+                    else { continue }
+                }
+
                 let input = usage.input_tokens ?? 0
                 let output = usage.output_tokens ?? 0
                 let cacheW = usage.cache_creation_input_tokens ?? 0
                 let cacheR = usage.cache_read_input_tokens ?? 0
 
-                let dedupKey = "\(input):\(output):\(cacheW):\(cacheR)"
+                // Prefer message.id (stable API identifier); fall back to token fingerprint.
+                let dedupKey = msg.id ?? "\(input):\(output):\(cacheW):\(cacheR)"
                 guard seenUsage.insert(dedupKey).inserted else { continue }
 
                 let rawModel = msg.model ?? "unknown"
@@ -76,9 +94,13 @@ enum ClaudeLogParser {
         return accumulator.dailyUsage()
     }
 
-    /// Fast turn-only count for monthly files — skips cost/token aggregation.
     static func countMonthlyTurns(files: [URL]) -> Int {
+        countMonthlyTurns(files: files, monthFilter: nil)
+    }
+
+    static func countMonthlyTurns(files: [URL], monthFilter: DateComponents?) -> Int {
         let decoder = JSONDecoder()
+        let calendar = Calendar.current
         var total = 0
 
         for file in files {
@@ -92,11 +114,34 @@ enum ClaudeLogParser {
                       entry.type == "assistant",
                       let usage = entry.message?.usage else { continue }
 
-                let key = "\(usage.input_tokens ?? 0):\(usage.output_tokens ?? 0):\(usage.cache_creation_input_tokens ?? 0):\(usage.cache_read_input_tokens ?? 0)"
+                if let filter = monthFilter, let ts = entry.timestamp {
+                    guard let date = ParserHelpers.parseISO8601(ts),
+                          ParserHelpers.matchesFilter(date, filter: filter, calendar: calendar)
+                    else { continue }
+                }
+
+                let msgID = entry.message?.id
+                let key = msgID ?? "\(usage.input_tokens ?? 0):\(usage.output_tokens ?? 0):\(usage.cache_creation_input_tokens ?? 0):\(usage.cache_read_input_tokens ?? 0)"
                 if seen.insert(key).inserted { total += 1 }
             }
         }
 
         return total
     }
+
+    // MARK: - Helpers
+
+    /// Resolve the top-level project directory name for a file that may be nested
+    /// arbitrarily deep (e.g. inside a `subagents/` subfolder).
+    private static func projectDirName(for file: URL, in dirs: [URL]) -> String {
+        let filePath = file.standardizedFileURL.path
+        for dir in dirs {
+            let dirPath = dir.standardizedFileURL.path
+            if filePath.hasPrefix(dirPath + "/") {
+                return dir.lastPathComponent
+            }
+        }
+        return file.deletingLastPathComponent().lastPathComponent
+    }
+
 }

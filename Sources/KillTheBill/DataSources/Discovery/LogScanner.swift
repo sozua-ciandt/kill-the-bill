@@ -29,14 +29,22 @@ enum LogScanner {
     }
 
     /// Find this month's transcript files across all project dirs.
+    /// Uses a generous mtime window (files modified in the current or previous month) so
+    /// long-running conversations that started last month still get included; the parser
+    /// then filters individual entries by their internal timestamp.
     static func findThisMonthClaudeTranscripts(from dirs: [URL]) -> [URL] {
         let now = Date()
         let calendar = Calendar.current
         let month = calendar.component(.month, from: now)
         let year = calendar.component(.year, from: now)
+        // Also include files from the previous calendar month in case a conversation
+        // started then but still has entries timestamped this month.
+        let prevMonth = month == 1 ? 12 : month - 1
+        let prevYear  = month == 1 ? year - 1 : year
         return findClaudeTranscripts(from: dirs) { cal, date in
-            cal.component(.month, from: date) == month &&
-            cal.component(.year, from: date) == year
+            let m = cal.component(.month, from: date)
+            let y = cal.component(.year, from: date)
+            return (m == month && y == year) || (m == prevMonth && y == prevYear)
         }
     }
 
@@ -57,21 +65,24 @@ enum LogScanner {
 
     private static func findClaudeTranscripts(from dirs: [URL], filter: (Calendar, Date) -> Bool) -> [URL] {
         let calendar = Calendar.current
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .contentModificationDateKey]
         var files: [URL] = []
 
         for dir in dirs {
-            guard let entries = try? FileManager.default.contentsOfDirectory(
+            guard let enumerator = FileManager.default.enumerator(
                 at: dir,
-                includingPropertiesForKeys: [.contentModificationDateKey],
-                options: []
+                includingPropertiesForKeys: Array(keys),
+                options: [.skipsHiddenFiles]
             ) else { continue }
 
-            for entry in entries where entry.pathExtension == "jsonl" {
-                if let modDate = try? entry.resourceValues(
-                    forKeys: [.contentModificationDateKey]
-                ).contentModificationDate, filter(calendar, modDate) {
-                    files.append(entry)
+            for case let entry as URL in enumerator where entry.pathExtension == "jsonl" {
+                guard let values = try? entry.resourceValues(forKeys: keys),
+                      values.isRegularFile == true,
+                      let modDate = values.contentModificationDate,
+                      filter(calendar, modDate) else {
+                    continue
                 }
+                files.append(entry)
             }
         }
 

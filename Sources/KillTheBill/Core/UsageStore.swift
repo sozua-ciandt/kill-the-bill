@@ -39,6 +39,12 @@ final class UsageStore {
     private nonisolated static func loadUsage() async -> (DailyUsage, LogScanner.DiscoveredSources, URL) {
         let sources = LogScanner.discoverSources()
         let pricing = ModelPricing.load(customProviders: sources.customProviders)
+        let calendar = Calendar.current
+        let now = Date()
+
+        let todayFilter = calendar.dateComponents([.year, .month, .day], from: now)
+        let monthFilter = calendar.dateComponents([.year, .month], from: now)
+
         let todayClaudeFiles = LogScanner.findTodayClaudeTranscripts(from: sources.claudeTranscriptDirs)
         let monthClaudeFiles = LogScanner.findThisMonthClaudeTranscripts(from: sources.claudeTranscriptDirs)
         let todayCodexFiles = LogScanner.findTodayCodexSessions(from: sources.codexSessionRoot)
@@ -46,18 +52,55 @@ final class UsageStore {
         let todayCustomFiles = CustomProviderParser.findTodayFiles(for: sources.customProviders)
         let monthCustomFiles = CustomProviderParser.findThisMonthFiles(for: sources.customProviders)
 
-        let claudeUsage = ClaudeLogParser.parseTranscripts(
+        let claudeToday = ClaudeLogParser.parseTranscripts(
             dirs: sources.claudeTranscriptDirs,
             files: todayClaudeFiles,
-            pricing: pricing
+            pricing: pricing,
+            dateFilter: todayFilter
         )
-        let codexUsage = CodexLogParser.parseSessions(files: todayCodexFiles, pricing: pricing)
-        let customUsage = CustomProviderParser.parseProviders(todayCustomFiles, pricing: pricing)
+        let claudeMonth = ClaudeLogParser.parseTranscripts(
+            dirs: sources.claudeTranscriptDirs,
+            files: monthClaudeFiles,
+            pricing: pricing,
+            dateFilter: monthFilter
+        )
 
-        var parsed = DailyUsage.combined([claudeUsage, codexUsage, customUsage])
-        parsed.monthlyTurnCount = ClaudeLogParser.countMonthlyTurns(files: monthClaudeFiles)
-            + CodexLogParser.countMonthlyTurns(files: monthCodexFiles)
-            + CustomProviderParser.countMonthlyTurns(monthCustomFiles)
+        let codexToday = CodexLogParser.parseSessions(files: todayCodexFiles, pricing: pricing, dateFilter: todayFilter)
+        let codexMonth = CodexLogParser.parseSessions(files: monthCodexFiles, pricing: pricing, dateFilter: monthFilter)
+
+        let customToday = CustomProviderParser.parseProviders(todayCustomFiles, pricing: pricing)
+        let customMonth = CustomProviderParser.parseProviders(monthCustomFiles, pricing: pricing)
+
+        let todayCombined = DailyUsage.combined([claudeToday, codexToday, customToday])
+        let monthCombined = DailyUsage.combined([claudeMonth, codexMonth, customMonth])
+
+        var parsed = todayCombined
+        parsed.monthlyCostUSD = monthCombined.totalCostUSD
+        parsed.monthlyTurnCount = monthCombined.turnCount
+
+        // Build daily lookup maps for injection into monthly lists.
+        let dailyWorkspaceMap = Dictionary(
+            todayCombined.perWorkspace.map { ($0.id, $0.costUSD) },
+            uniquingKeysWith: { a, _ in a }
+        )
+        let dailyModelMap = Dictionary(
+            todayCombined.perModel.map { ($0.id, $0.costUSD) },
+            uniquingKeysWith: { a, _ in a }
+        )
+
+        // Use monthly lists as the source so models/projects not used today still appear.
+        parsed.perWorkspace = monthCombined.perWorkspace.map { ws in
+            var ws = ws
+            ws.monthlyCostUSD = ws.costUSD
+            ws.costUSD = dailyWorkspaceMap[ws.id] ?? 0
+            return ws
+        }
+        parsed.perModel = monthCombined.perModel.map { m in
+            var m = m
+            m.monthlyCostUSD = m.costUSD
+            m.costUSD = dailyModelMap[m.id] ?? 0
+            return m
+        }
 
         return (parsed, sources, CustomProviderLoader.providerDirectory)
     }

@@ -2,6 +2,7 @@ import Foundation
 
 private struct CodexEntry: Decodable {
     let type: String?
+    let timestamp: String?
     let payload: CodexPayload?
 }
 
@@ -24,9 +25,19 @@ private struct CodexTokenUsage: Decodable {
 }
 
 enum CodexLogParser {
+
     static func parseSessions(files: [URL], pricing: ModelPricing) -> DailyUsage {
+        parseSessions(files: files, pricing: pricing, dateFilter: nil)
+    }
+
+    static func parseSessions(
+        files: [URL],
+        pricing: ModelPricing,
+        dateFilter: DateComponents?
+    ) -> DailyUsage {
         var accumulator = UsageAccumulator()
         let decoder = JSONDecoder()
+        let calendar = Calendar.current
 
         for file in files {
             guard let data = try? Data(contentsOf: file),
@@ -61,6 +72,13 @@ enum CodexLogParser {
                       entry.payload?.type == "token_count",
                       let usage = entry.payload?.info?.last_token_usage else {
                     continue
+                }
+
+                // Filter by timestamp when a date is specified; fall through if no timestamp.
+                if let filter = dateFilter, let ts = entry.timestamp {
+                    guard let date = ParserHelpers.parseISO8601(ts),
+                          ParserHelpers.matchesFilter(date, filter: filter, calendar: calendar)
+                    else { continue }
                 }
 
                 let rawInput = usage.input_tokens ?? 0
@@ -99,7 +117,12 @@ enum CodexLogParser {
     }
 
     static func countMonthlyTurns(files: [URL]) -> Int {
+        countMonthlyTurns(files: files, monthFilter: nil)
+    }
+
+    static func countMonthlyTurns(files: [URL], monthFilter: DateComponents?) -> Int {
         let decoder = JSONDecoder()
+        let calendar = Calendar.current
         var total = 0
 
         for file in files {
@@ -115,6 +138,12 @@ enum CodexLogParser {
                     continue
                 }
 
+                if let filter = monthFilter, let ts = entry.timestamp {
+                    guard let date = ParserHelpers.parseISO8601(ts),
+                          ParserHelpers.matchesFilter(date, filter: filter, calendar: calendar)
+                    else { continue }
+                }
+
                 let input = usage.input_tokens ?? 0
                 let cacheRead = usage.cached_input_tokens ?? 0
                 let output = usage.output_tokens ?? 0
@@ -128,9 +157,12 @@ enum CodexLogParser {
         return total
     }
 
+    // MARK: - Helpers
+
     private static func workspaceName(from cwd: String?) -> String {
         guard let cwd, !cwd.isEmpty else { return "Codex" }
         let name = URL(fileURLWithPath: cwd).lastPathComponent
         return name.isEmpty ? cwd : name
     }
+
 }

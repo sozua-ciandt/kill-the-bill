@@ -17,8 +17,11 @@ struct ModelPricing: Sendable {
 
     static func load(customProviders: [CustomProviderConfig] = CustomProviderLoader.loadProviders()) -> ModelPricing {
         var models = ModelsDevPricingCatalog.loadPricing()
+        // Authoritative custom prices override anything from the catalog.
+        models.merge(CustomPricing.authoritative) { _, new in new }
+        // User-defined custom providers override everything.
         let customPricing = CustomProviderLoader.loadCustomPricing(from: customProviders)
-        models.merge(customPricing) { _, custom in custom }
+        models.merge(customPricing) { _, new in new }
 
         return ModelPricing(models: models)
     }

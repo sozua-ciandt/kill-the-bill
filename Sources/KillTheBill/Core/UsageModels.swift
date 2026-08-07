@@ -22,11 +22,23 @@ struct ModelUsage: Identifiable, Sendable {
     var unpricedTurnCount: Int
 }
 
+enum MonthlyCostSource: Sendable, Equatable {
+    /// Month-to-date figure comes from Flow Platform's org-configured budget API.
+    case flow(percentage: Double, effectiveLimit: Double, renewalDate: String)
+    /// Flow was unavailable (no token, network error, auth failure) — fell back
+    /// to summing locally-parsed transcripts, same as before Flow was added.
+    case localFallback
+}
+
 // Holds today's usage in most fields. monthlyCostUSD, monthlyTurnCount, and the
 // perWorkspace/perModel lists are overwritten with month-to-date values after load.
+// perWorkspace/perModel monthly breakdowns always come from local parsing, even
+// when the headline monthlyCostUSD is sourced from Flow — Flow only reports an
+// aggregate org-wide figure, not per-project/per-model detail.
 struct DailyUsage: Sendable {
     var totalCostUSD: Double = 0
     var monthlyCostUSD: Double = 0
+    var monthlyCostSource: MonthlyCostSource = .localFallback
     var inputTokens: Int = 0
     var outputTokens: Int = 0
     var cacheWriteTokens: Int = 0

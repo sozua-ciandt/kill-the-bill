@@ -74,8 +74,27 @@ final class UsageStore {
         let todayCombined = DailyUsage.combined([claudeToday, codexToday, customToday])
         let monthCombined = DailyUsage.combined([claudeMonth, codexMonth, customMonth])
 
+        // Flow Platform's budget API is the primary source for the month-to-date
+        // headline figure when available; locally-parsed transcripts remain the
+        // fallback (and continue to power today's cost, per-project, per-model
+        // breakdowns unconditionally, regardless of Flow's availability).
+        var flowUsage = FlowBudgetClient.currentUsage()
+        if FlowBudgetClient.isStale(flowUsage) {
+            flowUsage = await FlowBudgetClient.refresh() ?? flowUsage
+        }
+
         var parsed = todayCombined
-        parsed.monthlyCostUSD = monthCombined.totalCostUSD
+        if let flowUsage {
+            parsed.monthlyCostUSD = flowUsage.consumedUSD
+            parsed.monthlyCostSource = .flow(
+                percentage: flowUsage.percentage,
+                effectiveLimit: flowUsage.effectiveLimit,
+                renewalDate: flowUsage.renewalDate
+            )
+        } else {
+            parsed.monthlyCostUSD = monthCombined.totalCostUSD
+            parsed.monthlyCostSource = .localFallback
+        }
         parsed.monthlyTurnCount = monthCombined.turnCount
 
         // Build daily lookup maps for injection into monthly lists.

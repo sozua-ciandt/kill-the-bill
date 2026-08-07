@@ -37,7 +37,16 @@ struct KillTheBillApp: App {
         return String(format: "$%.1f/mo", cost)
     }
 
+    /// Mirrors the bash statusline's threshold bands when Flow is the source
+    /// (green <80%, orange 80-94%, red >=95%); falls back to the flat-dollar
+    /// bands used before Flow was added when Flow is unavailable.
     private var costColor: Color {
+        if case .flow(let percentage, let effectiveLimit, _) = store.usage.monthlyCostSource,
+           effectiveLimit > 0 {
+            if percentage < 80 { return .green }
+            if percentage < 95 { return .orange }
+            return .red
+        }
         let cost = store.usage.monthlyCostUSD
         if cost < 50 { return .green }
         if cost < 150 { return .orange }

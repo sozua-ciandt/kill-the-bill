@@ -53,9 +53,14 @@ struct MenuBarView: View {
                     Text(formatCurrency(store.usage.monthlyCostUSD))
                         .font(.system(.title, design: .rounded, weight: .bold))
                         .foregroundStyle(costColor)
-                    Text("today: " + formatCurrency(store.usage.totalCostUSD))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 4) {
+                        Text("today: " + formatCurrency(store.usage.totalCostUSD))
+                        Text("·")
+                            .foregroundStyle(.tertiary)
+                        Text(monthlySourceLabel)
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 }
             }
 
@@ -246,12 +251,32 @@ struct MenuBarView: View {
         let fraction: Double
     }
 
+    /// Prefers Flow's org-configured budget (authoritative limit + consumption)
+    /// when available; falls back to the user's manually-entered monthlyCostLimit
+    /// otherwise, same as before Flow was added.
     private var costLimitProgress: CostProgress? {
+        if case .flow(let percentage, let effectiveLimit, _) = store.usage.monthlyCostSource,
+           effectiveLimit > 0 {
+            let used = store.usage.monthlyCostUSD
+            return CostProgress(
+                used: used,
+                remaining: max(effectiveLimit - used, 0),
+                fraction: min(percentage / 100, 1.0)
+            )
+        }
+
         guard monthlyCostLimit > 0 else { return nil }
         let used = store.usage.monthlyCostUSD
         let limit = max(monthlyCostLimit, 0.01)
         let fraction = min(used / limit, 1.0)
         return CostProgress(used: used, remaining: max(limit - used, 0), fraction: fraction)
+    }
+
+    private var monthlySourceLabel: String {
+        switch store.usage.monthlyCostSource {
+        case .flow: return "Flow"
+        case .localFallback: return "local"
+        }
     }
 
     private func progressColor(_ progress: Double) -> Color {
@@ -381,6 +406,12 @@ struct MenuBarView: View {
     // MARK: - Formatting
 
     private var costColor: Color {
+        if case .flow(let percentage, let effectiveLimit, _) = store.usage.monthlyCostSource,
+           effectiveLimit > 0 {
+            if percentage < 80 { return .green }
+            if percentage < 95 { return .orange }
+            return .red
+        }
         let c = store.usage.monthlyCostUSD
         if c < 50 { return .green }
         if c < 150 { return .orange }

@@ -33,7 +33,7 @@ enum FlowBudgetClient {
     private static let consumptionURL = URL(string: "https://flow.ciandt.com/metrics-collector-api/rate-limit/me?mode=budget")!
     private static let requestTimeout: TimeInterval = 5
     private static let tokenExpiryMargin: TimeInterval = 60
-    static let cacheTTL: TimeInterval = 300
+    static let cacheTTL: TimeInterval = 60
 
     // MARK: - Cache locations
 

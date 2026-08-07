@@ -24,6 +24,7 @@ bundle: build
 	@mkdir -p "$(APP_BUNDLE)/Contents/Resources"
 	@cp "$(BINARY)" "$(APP_BUNDLE)/Contents/MacOS/$(APP_NAME)"
 	@cp Info.plist "$(APP_BUNDLE)/Contents/Info.plist"
+	@cp assets/AppIcon.icns "$(APP_BUNDLE)/Contents/Resources/AppIcon.icns"
 	@codesign $(CODESIGN_FLAGS) "$(APP_BUNDLE)"
 	@echo "Built $(APP_BUNDLE)"
 

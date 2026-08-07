@@ -126,6 +126,7 @@ mkdir -p "$bundle/Contents/MacOS"
 mkdir -p "$bundle/Contents/Resources"
 cp "$binary" "$bundle/Contents/MacOS/$APP_NAME"
 cp "Info.plist" "$bundle/Contents/Info.plist"
+cp "assets/AppIcon.icns" "$bundle/Contents/Resources/AppIcon.icns"
 codesign --force --deep --sign - "$bundle"
 
 log "Installing to $install_dir/$APP_NAME.app..."

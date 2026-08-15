@@ -1,12 +1,13 @@
 import Foundation
 
 private struct ModelsDevProvider: Decodable {
-    let id: String
-    let models: [String: ModelsDevModel]
+    let id: String?
+    let models: [String: ModelsDevModel]?
 }
 
 private struct ModelsDevModel: Decodable {
-    let id: String
+    let id: String?
+    let base_model: String?
     let cost: ModelsDevCost?
 }
 
@@ -21,24 +22,63 @@ enum ModelsDevPricingCatalog {
     private static let catalogURL = URL(string: "https://models.dev/api.json")!
     private static let cacheMaxAge: TimeInterval = 24 * 60 * 60
 
+    private struct PricingCandidate {
+        let providerKey: String
+        let providerIDs: [String]
+        let modelID: String
+        let preferredProvider: String?
+        let pricing: TokenPricing
+
+        var preferenceRank: Int {
+            guard let preferredProvider else { return 1 }
+            return providerIDs.contains(preferredProvider) ? 0 : 1
+        }
+    }
+
     static func loadPricing() -> [String: TokenPricing] {
-        guard let data = cachedCatalogData(maxAge: cacheMaxAge) ?? remoteCatalogData() ?? cachedCatalogData() else {
-            return [:]
+        if let data = cachedCatalogData(maxAge: cacheMaxAge),
+           let pricing = decodedPricing(from: data) {
+            return pricing
         }
 
-        return decodePricing(from: data)
+        if let data = remoteCatalogData(),
+           let pricing = decodedPricing(from: data) {
+            cacheValidatedCatalog(data)
+            return pricing
+        }
+
+        if let data = cachedCatalogData(),
+           let pricing = decodedPricing(from: data) {
+            return pricing
+        }
+
+        return [:]
     }
 
     static func decodePricing(from data: Data) -> [String: TokenPricing] {
-        guard let providers = try? JSONDecoder().decode([String: ModelsDevProvider].self, from: data) else {
-            return [:]
+        decodedPricing(from: data) ?? [:]
+    }
+
+    private static func decodedPricing(from data: Data) -> [String: TokenPricing]? {
+        guard let providers = try? JSONDecoder().decode([String: ModelsDevProvider].self, from: data),
+              !providers.isEmpty else {
+            return nil
         }
 
         var pricing: [String: TokenPricing] = [:]
+        var candidatesByUnqualifiedID: [String: [PricingCandidate]] = [:]
 
-        for (providerKey, provider) in providers {
-            for (modelKey, model) in provider.models {
-                guard let cost = model.cost,
+        for providerKey in providers.keys.sorted() {
+            guard let provider = providers[providerKey] else { continue }
+            var providerIDSet = Set([providerKey.lowercased()])
+            if let providerID = provider.id?.lowercased(), !providerID.isEmpty {
+                providerIDSet.insert(providerID)
+            }
+            let providerIDs = providerIDSet.sorted()
+
+            for modelKey in (provider.models ?? [:]).keys.sorted() {
+                guard let model = provider.models?[modelKey],
+                      let cost = model.cost,
                       let input = cost.input,
                       let output = cost.output else {
                     continue
@@ -50,21 +90,97 @@ enum ModelsDevPricingCatalog {
                     cacheWrite: cost.cache_write ?? 0,
                     cacheRead: cost.cache_read ?? input
                 )
-
-                let providerIDs = Set([providerKey, provider.id])
-                let modelIDs = Set([modelKey, model.id])
+                var modelIDSet = Set([modelKey])
+                if let modelID = model.id, !modelID.isEmpty {
+                    modelIDSet.insert(modelID)
+                }
+                let modelIDs = modelIDSet.sorted()
+                let preferred = preferredProvider(
+                    for: modelIDs.first ?? modelKey,
+                    baseModel: model.base_model
+                )
 
                 for modelID in modelIDs {
-                    pricing[ModelPricing.normalizeProviderModel(modelID)] = tokenPricing
+                    let normalizedModelID = ModelPricing.normalizeQualifiedModel(modelID)
+                    guard !normalizedModelID.isEmpty else { continue }
 
+                    // Preserve the provider when the transcript records one.
                     for providerID in providerIDs {
-                        pricing[ModelPricing.normalizeProviderModel("\(providerID)/\(modelID)")] = tokenPricing
+                        let qualified = ModelPricing.normalizeQualifiedModel(
+                            "\(providerID)/\(normalizedModelID)"
+                        )
+                        if pricing[qualified] == nil {
+                            pricing[qualified] = tokenPricing
+                        }
+                    }
+
+                    var aliases = Set([ModelPricing.normalizeModel(modelID)])
+                    if let baseModel = model.base_model {
+                        aliases.insert(ModelPricing.normalizeModel(baseModel))
+                    }
+                    aliases.remove("")
+
+                    for alias in aliases {
+                        candidatesByUnqualifiedID[alias, default: []].append(
+                            PricingCandidate(
+                                providerKey: providerKey.lowercased(),
+                                providerIDs: providerIDs,
+                                modelID: normalizedModelID,
+                                preferredProvider: preferred,
+                                pricing: tokenPricing
+                            )
+                        )
                     }
                 }
             }
         }
 
+        // Unqualified transcript IDs are resolved only after every provider has
+        // been considered. The model's direct vendor wins; ties are lexical so
+        // JSON object order can never change the selected price.
+        for alias in candidatesByUnqualifiedID.keys.sorted() {
+            let candidates = candidatesByUnqualifiedID[alias, default: []].sorted {
+                if $0.preferenceRank != $1.preferenceRank {
+                    return $0.preferenceRank < $1.preferenceRank
+                }
+                if $0.providerKey != $1.providerKey {
+                    return $0.providerKey < $1.providerKey
+                }
+                return $0.modelID < $1.modelID
+            }
+            if let selected = candidates.first {
+                pricing[alias] = selected.pricing
+            }
+        }
+
         return pricing
+    }
+
+    private static func preferredProvider(for modelID: String, baseModel: String?) -> String? {
+        if let baseModel {
+            let components = baseModel.split(separator: "/", maxSplits: 1)
+            if components.count == 2, let provider = components.first, !provider.isEmpty {
+                return String(provider).lowercased()
+            }
+        }
+
+        let normalized = ModelPricing.normalizeModel(baseModel ?? modelID)
+        if normalized.hasPrefix("claude-") { return "anthropic" }
+        if normalized.hasPrefix("gpt-") || normalized.hasPrefix("chatgpt-") ||
+            normalized.hasPrefix("codex-") ||
+            normalized.range(of: #"^o\d"#, options: .regularExpression) != nil {
+            return "openai"
+        }
+        if normalized.hasPrefix("gemini-") { return "google" }
+        if normalized.hasPrefix("grok-") { return "xai" }
+        if normalized.hasPrefix("mistral-") || normalized.hasPrefix("codestral-") ||
+            normalized.hasPrefix("pixtral-") {
+            return "mistral"
+        }
+        if normalized.hasPrefix("command-") { return "cohere" }
+        if normalized.hasPrefix("deepseek-") { return "deepseek" }
+        if normalized.hasPrefix("qwen") { return "alibaba" }
+        return nil
     }
 
     private static func cachedCatalogData(maxAge: TimeInterval? = nil) -> Data? {
@@ -72,6 +188,7 @@ enum ModelsDevPricingCatalog {
         if let maxAge {
             guard let values = try? file.resourceValues(forKeys: [.contentModificationDateKey]),
                   let modifiedAt = values.contentModificationDate,
+                  Date().timeIntervalSince(modifiedAt) >= 0,
                   Date().timeIntervalSince(modifiedAt) < maxAge else {
                 return nil
             }
@@ -81,17 +198,12 @@ enum ModelsDevPricingCatalog {
     }
 
     private static func remoteCatalogData() -> Data? {
-        guard let data = try? Data(contentsOf: catalogURL) else {
-            return nil
-        }
+        try? Data(contentsOf: catalogURL)
+    }
 
-        try? FileManager.default.createDirectory(
-            at: cacheDirectory,
-            withIntermediateDirectories: true
-        )
-        try? data.write(to: cacheFile)
-
-        return data
+    private static func cacheValidatedCatalog(_ data: Data) {
+        try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+        try? data.write(to: cacheFile, options: .atomic)
     }
 
     private static var cacheDirectory: URL {

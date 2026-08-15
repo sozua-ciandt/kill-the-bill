@@ -1,7 +1,7 @@
 import Foundation
 
 // USD per million tokens.
-struct TokenPricing: Sendable {
+struct TokenPricing: Equatable, Sendable {
     let input: Double
     let output: Double
     let cacheWrite: Double
@@ -15,20 +15,13 @@ struct ModelPricing: Sendable {
         self.models = models
     }
 
-    static func load(customProviders: [CustomProviderConfig] = CustomProviderLoader.loadProviders()) -> ModelPricing {
-        var models = ModelsDevPricingCatalog.loadPricing()
-        // Authoritative custom prices override anything from the catalog.
-        models.merge(CustomPricing.authoritative) { _, new in new }
-        // User-defined custom providers override everything.
-        let customPricing = CustomProviderLoader.loadCustomPricing(from: customProviders)
-        models.merge(customPricing) { _, new in new }
-
-        return ModelPricing(models: models)
+    static func load() -> ModelPricing {
+        ModelPricing(models: ModelsDevPricingCatalog.loadPricing())
     }
 
     func cost(model rawModel: String, input: Int, output: Int, cacheWrite: Int, cacheRead: Int) -> Double? {
         Self.computeCost(
-            pricing: models[Self.normalizeModel(rawModel)],
+            pricing: Self.lookupPricing(for: rawModel, in: models),
             input: input,
             output: output,
             cacheWrite: cacheWrite,
@@ -53,19 +46,56 @@ struct ModelPricing: Sendable {
         normalizeModel(raw)
     }
 
-    static func normalizeModel(_ raw: String) -> String {
-        let normalized = raw
+    /// Normalizes syntax while retaining a real provider prefix for an exact
+    /// catalog lookup. Parsers should use `normalizeModel` for display/grouping.
+    static func normalizeQualifiedModel(_ raw: String) -> String {
+        var normalized = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
-            .replacingOccurrences(of: "anthropic/", with: "")
-            .replacingOccurrences(of: "anthropic.", with: "")
-            .replacingOccurrences(of: "openai/", with: "")
-            .replacingOccurrences(of: "openai.", with: "")
-            .replacingOccurrences(of: "gpt-5-5", with: "gpt-5.5")
-            .replacingOccurrences(of: "gpt-5-4", with: "gpt-5.4")
-            .replacingOccurrences(of: "models/", with: "")
-            .replacing(#/-\d{8}$/#, with: "")
+
+        // Google's SDK uses `models/` as a resource prefix, not a provider ID.
+        if normalized.hasPrefix("models/") {
+            normalized.removeFirst("models/".count)
+        }
+
+        return normalizeCommonModelSyntax(normalized)
+    }
+
+    static func normalizeModel(_ raw: String) -> String {
+        var normalized = normalizeQualifiedModel(raw)
+
+        for prefix in ["anthropic.", "openai."] where normalized.hasPrefix(prefix) {
+            normalized.removeFirst(prefix.count)
+        }
+
+        let knownProviderPrefixes = [
+            "anthropic/", "openai/", "google/", "xai/", "mistral/",
+            "cohere/", "deepseek/", "alibaba/",
+        ]
+        for prefix in knownProviderPrefixes where normalized.hasPrefix(prefix) {
+            normalized.removeFirst(prefix.count)
+            break
+        }
 
         return normalized
+    }
+
+    private static func lookupPricing(
+        for rawModel: String,
+        in models: [String: TokenPricing]
+    ) -> TokenPricing? {
+        let providerQualified = normalizeQualifiedModel(rawModel)
+        if let exact = models[providerQualified] {
+            return exact
+        }
+        return models[normalizeModel(rawModel)]
+    }
+
+    private static func normalizeCommonModelSyntax(_ raw: String) -> String {
+        raw
+            .replacingOccurrences(of: "gpt-5-5", with: "gpt-5.5")
+            .replacingOccurrences(of: "gpt-5-4", with: "gpt-5.4")
+            .replacing(#/-\d{8}$/#, with: "")
     }
 
     private static func computeCost(pricing: TokenPricing?, input: Int, output: Int, cacheWrite: Int, cacheRead: Int) -> Double? {

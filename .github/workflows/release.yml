@@ -8,29 +8,20 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
-            gh release edit "${{ github.ref_name }}" \
-              --title "Kill the Bill ${{ github.ref_name }}" \
-              --latest
-          else
-            gh release create "${{ github.ref_name }}" \
-              --title "Kill the Bill ${{ github.ref_name }}" \
-              --generate-notes \
-              --latest
-          fi
+      - name: Run tests
+        run: make test
 
-      - name: Check signing secrets
-        id: signing
+      - name: Validate tag, version, and signing secrets
         env:
           APPLE_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_BASE64 }}
           APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
@@ -39,97 +30,128 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
-          if [ -n "$APPLE_DEVELOPER_ID_CERTIFICATE_BASE64" ] \
-            && [ -n "$APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD" ] \
-            && [ -n "$APPLE_SIGNING_IDENTITY" ] \
-            && [ -n "$APPLE_ID" ] \
-            && [ -n "$APPLE_TEAM_ID" ] \
-            && [ -n "$APPLE_APP_SPECIFIC_PASSWORD" ]; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "Apple signing secrets are not configured; publishing source-only release for curl installer."
-          fi
+          set -euo pipefail
+          release_version="${GITHUB_REF_NAME#v}"
+          plist_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)"
+          test "$GITHUB_REF_NAME" = "v$release_version"
+          test "$plist_version" = "$release_version"
+          test -n "$APPLE_DEVELOPER_ID_CERTIFICATE_BASE64"
+          test -n "$APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD"
+          test -n "$APPLE_SIGNING_IDENTITY"
+          test -n "$APPLE_ID"
+          test -n "$APPLE_TEAM_ID"
+          test -n "$APPLE_APP_SPECIFIC_PASSWORD"
 
       - name: Import Developer ID certificate
-        if: steps.signing.outputs.available == 'true'
         env:
           APPLE_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_BASE64 }}
           APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id-application.p12"
-          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          set -euo pipefail
+          certificate_path="$RUNNER_TEMP/developer-id-application.p12"
+          keychain_path="$RUNNER_TEMP/app-signing.keychain-db"
 
-          echo "$APPLE_DEVELOPER_ID_CERTIFICATE_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security import "$CERTIFICATE_PATH" \
+          echo "$APPLE_DEVELOPER_ID_CERTIFICATE_BASE64" | base64 --decode > "$certificate_path"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain_path"
+          security import "$certificate_path" \
             -P "$APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD" \
             -A \
-            -k "$KEYCHAIN_PATH"
-          security list-keychains -d user -s "$KEYCHAIN_PATH"
-          security default-keychain -s "$KEYCHAIN_PATH"
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+            -k "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+          security default-keychain -s "$keychain_path"
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$keychain_path"
+          security find-identity -v -p codesigning "$keychain_path"
 
-      - name: Build release binary
-        if: steps.signing.outputs.available == 'true'
-        run: swift build -c release
-
-      - name: Bundle .app
-        if: steps.signing.outputs.available == 'true'
+      - name: Build and sign application bundle
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-        run: make bundle SIGNING_IDENTITY="$APPLE_SIGNING_IDENTITY"
-
-      - name: Verify signature
-        if: steps.signing.outputs.available == 'true'
-        run: codesign --verify --deep --strict --verbose=2 .build/arm64-apple-macosx/release/KillTheBill.app
-
-      - name: Zip app bundle for notarization
-        if: steps.signing.outputs.available == 'true'
         run: |
-          cd .build/arm64-apple-macosx/release
-          ditto -c -k --keepParent KillTheBill.app KillTheBill.app.zip
+          set -euo pipefail
+          make bundle SIGNING_IDENTITY="$APPLE_SIGNING_IDENTITY"
+          app_bundle="$(make -s print-app-bundle)"
+          test -d "$app_bundle/Contents/Resources/KillTheBill_KillTheBill.bundle"
+          codesign --verify --deep --strict --verbose=2 "$app_bundle"
+          codesign -dv --verbose=4 "$app_bundle" 2>&1 | grep -F 'Authority=Developer ID Application:'
+          printf 'APP_BUNDLE=%s\n' "$app_bundle" >> "$GITHUB_ENV"
 
-      - name: Notarize app bundle
-        if: steps.signing.outputs.available == 'true'
+      - name: Create archive for notarization
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/KillTheBill.app.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$archive"
+          printf 'APP_ARCHIVE=%s\n' "$archive" >> "$GITHUB_ENV"
+
+      - name: Notarize application bundle
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
-          xcrun notarytool submit .build/arm64-apple-macosx/release/KillTheBill.app.zip \
+          set -euo pipefail
+          xcrun notarytool submit "$APP_ARCHIVE" \
             --apple-id "$APPLE_ID" \
             --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_APP_SPECIFIC_PASSWORD" \
             --wait
 
-      - name: Staple notarization ticket
-        if: steps.signing.outputs.available == 'true'
+      - name: Staple, assess, and rebuild final archive
         run: |
-          xcrun stapler staple .build/arm64-apple-macosx/release/KillTheBill.app
-          xcrun stapler validate .build/arm64-apple-macosx/release/KillTheBill.app
-          spctl --assess --type execute --verbose=4 .build/arm64-apple-macosx/release/KillTheBill.app
+          set -euo pipefail
+          xcrun stapler staple "$APP_BUNDLE"
+          xcrun stapler validate "$APP_BUNDLE"
+          spctl --assess --type execute --verbose=4 "$APP_BUNDLE"
+          rm "$APP_ARCHIVE"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$APP_ARCHIVE"
+          cd "$(dirname "$APP_ARCHIVE")"
+          shasum -a 256 "$(basename "$APP_ARCHIVE")" > KillTheBill.app.zip.sha256
+          printf 'APP_CHECKSUM=%s\n' "$RUNNER_TEMP/KillTheBill.app.zip.sha256" >> "$GITHUB_ENV"
 
-      - name: Zip notarized app bundle
-        if: steps.signing.outputs.available == 'true'
+      - name: Validate final distributable
         run: |
-          cd .build/arm64-apple-macosx/release
-          rm KillTheBill.app.zip
-          ditto -c -k --keepParent KillTheBill.app KillTheBill.app.zip
+          set -euo pipefail
+          validation_dir="$RUNNER_TEMP/release-validation"
+          mkdir -p "$validation_dir"
+          ditto -x -k "$APP_ARCHIVE" "$validation_dir"
+          validated_app="$validation_dir/KillTheBill.app"
+          test -x "$validated_app/Contents/MacOS/KillTheBill"
+          test -d "$validated_app/Contents/Resources/KillTheBill_KillTheBill.bundle"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$validated_app/Contents/Info.plist")" \
+            = 'dev.sozua-ciandt.kill-the-bill'
+          codesign --verify --deep --strict --verbose=2 "$validated_app"
+          spctl --assess --type execute --verbose=4 "$validated_app"
+          xcrun stapler validate "$validated_app"
+          cd "$(dirname "$APP_ARCHIVE")"
+          shasum -a 256 -c "$APP_CHECKSUM"
 
-      - name: Upload notarized app
-        if: steps.signing.outputs.available == 'true'
+      - name: Create draft release with validated assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ github.ref_name }}" \
-            .build/arm64-apple-macosx/release/KillTheBill.app.zip \
-            --clobber
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists; refusing to mutate it." >&2
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            "$APP_ARCHIVE#KillTheBill.app.zip" \
+            "$APP_CHECKSUM#KillTheBill.app.zip.sha256" \
+            --draft \
+            --verify-tag \
+            --title "Kill the Bill $GITHUB_REF_NAME" \
+            --generate-notes
+
+      - name: Publish release as latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest
 
       - name: Delete temporary keychain
-        if: always() && steps.signing.outputs.available == 'true'
+        if: always()
         run: security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" || true

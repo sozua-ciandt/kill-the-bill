@@ -5,6 +5,13 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: macos-15
@@ -17,15 +24,24 @@ jobs:
           xcode-select -p
           swift --version
 
-      - name: Run tests
-        run: swift test --enable-code-coverage
+      - name: Run project checks
+        run: make check SWIFT_TEST_FLAGS="--enable-code-coverage --parallel"
 
-      - name: Check coverage
+      - name: Report coverage
         run: |
-          TEST_BINARY=$(find .build -path '*KillTheBillPackageTests.xctest/Contents/MacOS/KillTheBillPackageTests' -type f | head -n 1)
+          set -euo pipefail
+          TEST_BINARY=$(
+            find .build \
+              -path '*KillTheBillPackageTests.xctest/Contents/MacOS/KillTheBillPackageTests' \
+              -type f -print -quit
+          )
+          COVERAGE_PROFILE=$(
+            find .build \
+              -path '*/codecov/default.profdata' \
+              -type f -print -quit
+          )
+          test -n "$TEST_BINARY"
+          test -n "$COVERAGE_PROFILE"
           xcrun llvm-cov report "$TEST_BINARY" \
-            -instr-profile .build/debug/codecov/default.profdata \
+            -instr-profile "$COVERAGE_PROFILE" \
             -ignore-filename-regex='Tests|/App/' | tee coverage.txt
-
-      - name: Build release
-        run: swift build -c release

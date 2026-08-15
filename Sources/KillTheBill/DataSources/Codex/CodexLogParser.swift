@@ -3,11 +3,17 @@ import Foundation
 private struct CodexEntry: Decodable {
     let type: String?
     let timestamp: String?
+    let ordinal: Int?
     let payload: CodexPayload?
 }
 
 private struct CodexPayload: Decodable {
     let type: String?
+    let id: String?
+    let session_id: String?
+    let parent_thread_id: String?
+    let thread_source: String?
+    let subagent_history_start_ordinal: Int?
     let cwd: String?
     let model: String?
     let info: CodexTokenInfo?
@@ -20,8 +26,22 @@ private struct CodexTokenInfo: Decodable {
 private struct CodexTokenUsage: Decodable {
     let input_tokens: Int?
     let cached_input_tokens: Int?
+    let cache_write_input_tokens: Int?
     let output_tokens: Int?
     let total_tokens: Int?
+}
+
+private struct CodexSessionIdentity {
+    let id: String
+    let parentID: String?
+    let workspace: String
+    let ownHistoryStartOrdinal: Int?
+}
+
+private struct CodexTranscript {
+    let file: URL
+    let text: String
+    let identity: CodexSessionIdentity
 }
 
 enum CodexLogParser {
@@ -38,23 +58,39 @@ enum CodexLogParser {
         var accumulator = UsageAccumulator()
         let decoder = JSONDecoder()
         let calendar = Calendar.current
+        let transcripts = files.compactMap { transcript(at: $0, decoder: decoder) }
+        let identitiesByID = Dictionary(
+            transcripts.map { ($0.identity.id, $0.identity) },
+            uniquingKeysWith: { first, _ in first }
+        )
 
-        for file in files {
-            guard let data = try? Data(contentsOf: file),
-                  let text = String(data: data, encoding: .utf8) else { continue }
-
-            var currentWorkspace = workspaceName(from: nil)
+        for transcript in transcripts {
+            let file = transcript.file
+            let identity = transcript.identity
+            let rootSessionID = logicalRootSessionID(
+                for: identity,
+                identitiesByID: identitiesByID
+            )
+            let rootWorkspace = identitiesByID[rootSessionID]?.workspace ?? identity.workspace
+            var currentWorkspace = identity.workspace
             var currentModel = "unknown"
+            var hasUsageInPeriod = false
 
-            for line in text.split(separator: "\n") {
+            for line in transcript.text.split(separator: "\n") {
                 guard let lineData = line.data(using: .utf8),
                       let entry = try? decoder.decode(CodexEntry.self, from: lineData) else {
                     continue
                 }
 
-                if entry.type == "session_meta", let cwd = entry.payload?.cwd {
-                    currentWorkspace = workspaceName(from: cwd)
-                    accumulator.registerSession(file, workspaceID: currentWorkspace, displayName: currentWorkspace)
+                // The canonical metadata was collected before parsing. Later
+                // session_meta records in a fork are inherited parent history.
+                if entry.type == "session_meta" {
+                    continue
+                }
+
+                if let firstOwnOrdinal = identity.ownHistoryStartOrdinal,
+                   let ordinal = entry.ordinal,
+                   ordinal < firstOwnOrdinal {
                     continue
                 }
 
@@ -83,7 +119,12 @@ enum CodexLogParser {
 
                 let rawInput = usage.input_tokens ?? 0
                 let cacheRead = min(rawInput, usage.cached_input_tokens ?? 0)
-                let input = max(rawInput - cacheRead, 0)
+                let remainingAfterRead = max(rawInput - cacheRead, 0)
+                let cacheWrite = min(
+                    remainingAfterRead,
+                    usage.cache_write_input_tokens ?? 0
+                )
+                let input = max(remainingAfterRead - cacheWrite, 0)
                 let output = usage.output_tokens ?? 0
                 let detailedTokens = rawInput + output
                 let totalTokens = usage.total_tokens ?? detailedTokens
@@ -94,9 +135,10 @@ enum CodexLogParser {
                 let cost = detailedTokens > 0
                     ? pricing.cost(
                         model: currentModel,
-                        rawInput: rawInput,
+                        input: input,
                         output: output,
-                        cachedInput: cacheRead
+                        cacheWrite: cacheWrite,
+                        cacheRead: cacheRead
                     )
                     : nil
 
@@ -106,9 +148,19 @@ enum CodexLogParser {
                     modelID: modelID,
                     input: input,
                     output: output,
-                    cacheWrite: 0,
+                    cacheWrite: cacheWrite,
                     cacheRead: cacheRead,
                     costUSD: cost
+                )
+                hasUsageInPeriod = true
+            }
+
+            if hasUsageInPeriod {
+                accumulator.registerSession(
+                    file,
+                    logicalSessionID: "codex:\(rootSessionID)",
+                    workspaceID: rootWorkspace,
+                    displayName: rootWorkspace
                 )
             }
         }
@@ -158,6 +210,57 @@ enum CodexLogParser {
     }
 
     // MARK: - Helpers
+
+    private static func transcript(at file: URL, decoder: JSONDecoder) -> CodexTranscript? {
+        guard let data = try? Data(contentsOf: file),
+              let text = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+
+        let fallbackID = file.standardizedFileURL.resolvingSymlinksInPath().path
+        var identity = CodexSessionIdentity(
+            id: fallbackID,
+            parentID: nil,
+            workspace: workspaceName(from: nil),
+            ownHistoryStartOrdinal: nil
+        )
+
+        for line in text.split(separator: "\n") {
+            guard let lineData = line.data(using: .utf8),
+                  let entry = try? decoder.decode(CodexEntry.self, from: lineData),
+                  entry.type == "session_meta",
+                  let payload = entry.payload else {
+                continue
+            }
+
+            identity = CodexSessionIdentity(
+                id: payload.id ?? payload.session_id ?? fallbackID,
+                parentID: payload.parent_thread_id,
+                workspace: workspaceName(from: payload.cwd),
+                ownHistoryStartOrdinal: payload.subagent_history_start_ordinal
+            )
+            break
+        }
+
+        return CodexTranscript(file: file, text: text, identity: identity)
+    }
+
+    private static func logicalRootSessionID(
+        for identity: CodexSessionIdentity,
+        identitiesByID: [String: CodexSessionIdentity]
+    ) -> String {
+        var current = identity
+        var rootID = current.id
+        var visited = Set([current.id])
+
+        while let parentID = current.parentID, visited.insert(parentID).inserted {
+            rootID = parentID
+            guard let parent = identitiesByID[parentID] else { break }
+            current = parent
+        }
+
+        return rootID
+    }
 
     private static func workspaceName(from cwd: String?) -> String {
         guard let cwd, !cwd.isEmpty else { return "Codex" }

@@ -40,4 +40,54 @@ final class ClaudeLogParserTests: XCTestCase {
 
         XCTAssertEqual(ClaudeLogParser.countMonthlyTurns(files: [file]), 2)
     }
+
+    func testRootAndSubagentAreOneLogicalSessionWhileBothCostsArePreserved() throws {
+        let temp = try TempDirectory()
+        let root = try temp.file(
+            "-Users-diogor-Projetos-my-app/root-session.jsonl",
+            contents: """
+            {"type":"assistant","timestamp":"2026-08-14T12:00:00Z","message":{"id":"root-message","model":"claude-sonnet-4-5","usage":{"input_tokens":1000000,"output_tokens":0}}}
+            """
+        )
+        let child = try temp.file(
+            "-Users-diogor-Projetos-my-app/root-session/subagents/agent-child.jsonl",
+            contents: """
+            {"type":"assistant","timestamp":"2026-08-14T12:01:00Z","message":{"id":"child-message","model":"claude-sonnet-4-5","usage":{"input_tokens":500000,"output_tokens":0}}}
+            """
+        )
+
+        let usage = ClaudeLogParser.parseTranscripts(
+            dirs: [root.deletingLastPathComponent()],
+            files: [child, root],
+            pricing: testPricing()
+        )
+
+        XCTAssertEqual(usage.sessionCount, 1)
+        XCTAssertEqual(usage.perWorkspace.first?.sessionCount, 1)
+        XCTAssertEqual(usage.turnCount, 2)
+        XCTAssertEqual(usage.inputTokens, 1_500_000)
+        assertDoubleEqual(usage.totalCostUSD, 4.5)
+    }
+
+    func testTranscriptWithoutUsageInDateFilterDoesNotRegisterSession() throws {
+        let temp = try TempDirectory()
+        let file = try temp.file(
+            "project/outside-period.jsonl",
+            contents: """
+            {"type":"assistant","timestamp":"2026-08-13T12:00:00Z","message":{"id":"old-message","model":"claude-sonnet-4-5","usage":{"input_tokens":1000000,"output_tokens":0}}}
+            """
+        )
+
+        let usage = ClaudeLogParser.parseTranscripts(
+            dirs: [file.deletingLastPathComponent()],
+            files: [file],
+            pricing: testPricing(),
+            dateFilter: DateComponents(year: 2026, month: 8, day: 14)
+        )
+
+        XCTAssertEqual(usage.sessionCount, 0)
+        XCTAssertEqual(usage.turnCount, 0)
+        XCTAssertTrue(usage.perWorkspace.isEmpty)
+        assertDoubleEqual(usage.totalCostUSD, 0)
+    }
 }

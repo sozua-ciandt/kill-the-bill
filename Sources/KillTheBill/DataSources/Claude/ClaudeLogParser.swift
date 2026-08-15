@@ -43,9 +43,9 @@ enum ClaudeLogParser {
         for file in files {
             let parentDir = projectDirName(for: file, in: dirs)
             let projectName = LogScanner.projectName(from: parentDir)
-            accumulator.registerSession(file, workspaceID: projectName, displayName: projectName)
 
             var seenUsage: Set<String> = []
+            var hasUsageInPeriod = false
 
             guard let data = try? Data(contentsOf: file),
                   let text = String(data: data, encoding: .utf8) else { continue }
@@ -87,6 +87,16 @@ enum ClaudeLogParser {
                     cacheWrite: cacheW,
                     cacheRead: cacheR,
                     costUSD: cost
+                )
+                hasUsageInPeriod = true
+            }
+
+            if hasUsageInPeriod {
+                accumulator.registerSession(
+                    file,
+                    logicalSessionID: logicalSessionID(for: file),
+                    workspaceID: projectName,
+                    displayName: projectName
                 )
             }
         }
@@ -130,6 +140,35 @@ enum ClaudeLogParser {
     }
 
     // MARK: - Helpers
+
+    /// Claude stores child-agent transcripts under
+    /// `<project>/<root-session-id>/subagents/agent-*.jsonl`. They contribute
+    /// usage to the root conversation but are not independent sessions.
+    private static func logicalSessionID(for file: URL) -> String {
+        let standardized = file.standardizedFileURL
+        let components = standardized.pathComponents
+        guard components.lastIndex(of: "subagents") != nil else {
+            return standardized.resolvingSymlinksInPath().path
+        }
+
+        let subagentsDirectory = standardized.deletingLastPathComponent()
+        guard subagentsDirectory.lastPathComponent == "subagents" else {
+            return standardized.resolvingSymlinksInPath().path
+        }
+
+        let sessionDirectory = subagentsDirectory.deletingLastPathComponent()
+        let rootSessionID = sessionDirectory.lastPathComponent
+        guard !rootSessionID.isEmpty else {
+            return standardized.resolvingSymlinksInPath().path
+        }
+
+        return sessionDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent(rootSessionID)
+            .appendingPathExtension("jsonl")
+            .resolvingSymlinksInPath()
+            .path
+    }
 
     /// Resolve the top-level project directory name for a file that may be nested
     /// arbitrarily deep (e.g. inside a `subagents/` subfolder).

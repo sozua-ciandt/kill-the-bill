@@ -6,26 +6,34 @@ enum LogScanner {
     struct DiscoveredSources: Sendable {
         let claudeTranscriptDirs: [URL]
         let codexSessionRoot: URL?
-        let customProviders: [CustomProviderConfig]
 
         var sourceCount: Int {
             claudeTranscriptDirs.count
                 + (codexSessionRoot == nil ? 0 : 1)
-                + customProviders.filter { $0.files != nil && $0.event != nil }.count
         }
     }
 
-    static func discoverSources() -> DiscoveredSources {
+    static func discoverSources(
+        trackedHarnesses: Set<Harness> = Set(Harness.allCases)
+    ) -> DiscoveredSources {
         DiscoveredSources(
-            claudeTranscriptDirs: discoverClaudeTranscriptDirs(),
-            codexSessionRoot: discoverCodexSessionRoot(),
-            customProviders: CustomProviderLoader.loadProviders()
+            claudeTranscriptDirs: trackedHarnesses.contains(.claudeCode)
+                ? discoverClaudeTranscriptDirs()
+                : [],
+            codexSessionRoot: trackedHarnesses.contains(.codex)
+                ? discoverCodexSessionRoot()
+                : nil
         )
     }
 
     /// Find today's transcript files across all project dirs.
     static func findTodayClaudeTranscripts(from dirs: [URL]) -> [URL] {
         findClaudeTranscripts(from: dirs) { calendar, date in calendar.isDateInToday(date) }
+    }
+
+    /// Find every Claude transcript recursively, regardless of modification date.
+    static func findAllClaudeTranscripts(from dirs: [URL]) -> [URL] {
+        findClaudeTranscripts(from: dirs) { _, _ in true }
     }
 
     /// Find this month's transcript files across all project dirs.
@@ -50,6 +58,11 @@ enum LogScanner {
 
     static func findTodayCodexSessions(from root: URL?) -> [URL] {
         findCodexSessions(from: root) { calendar, date in calendar.isDateInToday(date) }
+    }
+
+    /// Find every Codex session recursively, regardless of modification date.
+    static func findAllCodexSessions(from root: URL?) -> [URL] {
+        findCodexSessions(from: root) { _, _ in true }
     }
 
     static func findThisMonthCodexSessions(from root: URL?) -> [URL] {
@@ -86,7 +99,7 @@ enum LogScanner {
             }
         }
 
-        return files
+        return files.sorted { $0.standardizedFileURL.path < $1.standardizedFileURL.path }
     }
 
     private static func findCodexSessions(from root: URL?, filter: (Calendar, Date) -> Bool) -> [URL] {
@@ -113,7 +126,7 @@ enum LogScanner {
             files.append(file)
         }
 
-        return files
+        return files.sorted { $0.standardizedFileURL.path < $1.standardizedFileURL.path }
     }
 
     /// Decode a project display name from the encoded directory name.

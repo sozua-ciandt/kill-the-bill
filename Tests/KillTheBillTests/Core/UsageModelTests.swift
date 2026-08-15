@@ -61,4 +61,34 @@ final class UsageModelTests: XCTestCase {
         XCTAssertEqual(combined.perModel.first?.turnCount, 4)
         assertDoubleEqual(combined.totalCostUSD, 3)
     }
+
+    func testTiedWorkspaceAndModelTotalsUseStableIDOrdering() {
+        let usages = ["zeta", "alpha"].map { id in
+            DailyUsage(
+                perWorkspace: [WorkspaceUsage(
+                    id: id,
+                    displayName: id,
+                    costUSD: 1,
+                    inputTokens: 0,
+                    outputTokens: 0,
+                    cacheWriteTokens: 0,
+                    cacheReadTokens: 0,
+                    sessionCount: 1,
+                    turnCount: 1,
+                    unpricedTurnCount: 0
+                )],
+                perModel: [ModelUsage(
+                    id: id,
+                    costUSD: 1,
+                    turnCount: 1,
+                    unpricedTurnCount: 0
+                )]
+            )
+        }
+
+        let combined = DailyUsage.combined(usages)
+
+        XCTAssertEqual(combined.perWorkspace.map(\.id), ["alpha", "zeta"])
+        XCTAssertEqual(combined.perModel.map(\.id), ["alpha", "zeta"])
+    }
 }

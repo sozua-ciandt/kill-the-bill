@@ -107,10 +107,16 @@ struct DailyUsage: Sendable {
         }
 
         combined.perWorkspace = workspaces.values.sorted {
+            if $0.costUSD == $1.costUSD, $0.turnCount == $1.turnCount {
+                return $0.id < $1.id
+            }
             if $0.costUSD == $1.costUSD { return $0.turnCount > $1.turnCount }
             return $0.costUSD > $1.costUSD
         }
         combined.perModel = models.values.sorted {
+            if $0.costUSD == $1.costUSD, $0.turnCount == $1.turnCount {
+                return $0.id < $1.id
+            }
             if $0.costUSD == $1.costUSD { return $0.turnCount > $1.turnCount }
             return $0.costUSD > $1.costUSD
         }
@@ -125,9 +131,15 @@ struct UsageAccumulator {
     private(set) var lastDate: Date = .distantPast
     private(set) var sessionFiles: Set<String> = []
 
-    mutating func registerSession(_ file: URL, workspaceID: String, displayName: String) {
+    mutating func registerSession(
+        _ file: URL,
+        logicalSessionID: String? = nil,
+        workspaceID: String,
+        displayName: String
+    ) {
         ensureWorkspace(id: workspaceID, displayName: displayName)
-        if sessionFiles.insert(file.path).inserted {
+        let sessionID = logicalSessionID ?? file.standardizedFileURL.path
+        if sessionFiles.insert(sessionID).inserted {
             workspaces[workspaceID]?.sessionCount += 1
         }
 
@@ -169,10 +181,16 @@ struct UsageAccumulator {
 
     func dailyUsage() -> DailyUsage {
         let allWorkspaces = workspaces.values.sorted {
+            if $0.costUSD == $1.costUSD, $0.turnCount == $1.turnCount {
+                return $0.id < $1.id
+            }
             if $0.costUSD == $1.costUSD { return $0.turnCount > $1.turnCount }
             return $0.costUSD > $1.costUSD
         }
         let allModels = models.values.sorted {
+            if $0.costUSD == $1.costUSD, $0.turnCount == $1.turnCount {
+                return $0.id < $1.id
+            }
             if $0.costUSD == $1.costUSD { return $0.turnCount > $1.turnCount }
             return $0.costUSD > $1.costUSD
         }

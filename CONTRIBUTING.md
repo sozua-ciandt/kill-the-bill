@@ -11,98 +11,58 @@ make install   # builds release binary, bundles .app, copies to /Applications
 make run       # runs without installing
 ```
 
+Before opening a pull request, run the same quality gate used by CI:
+
+```bash
+make check
+```
+
+For a faster test-only iteration, run `make test`.
+
 ## How it works
 
 Claude Code writes JSONL transcripts to `~/.claude/projects/`, and Codex writes
-session JSONL files to `~/.codex/sessions/`. Kill the Bill reads both,
-aggregates token usage by project and model, and estimates cost from
-`models.dev` pricing when available, with local custom overrides.
+session JSONL files to `~/.codex/sessions/`. Kill the Bill reads enabled native
+harnesses, aggregates token usage by project and model, and estimates cost from
+the [`models.dev`](https://models.dev/api.json) catalog.
 
 Subscription fees are not tracked. Costs only estimate token-priced usage.
 
-## Custom transcript providers
+The monthly headline and local breakdowns intentionally have different sources
+of truth. Flow is preferred for the authoritative month-to-date cost when it is
+available. Claude and Codex transcripts remain responsible for today's cost,
+turn counts, project/model breakdowns, and individual session estimates. See
+[docs/architecture.md](docs/architecture.md) for the invariants and data flow.
 
-Add JSON provider rules to `~/.kill-the-bill/providers/*.json` to support other
-tools or custom proxies that write JSONL usage logs. A rule defines where
-transcript files live, which JSON records count as usage events, how to read
-token/model/project fields, and optional pricing.
+## Pricing catalog
 
-Example Gemini-style rule:
+`models.dev` is the only source of token prices. The catalog is cached at
+`~/.kill-the-bill/cache/models-dev-api.json` for 24 hours; when a refresh fails,
+the last valid cached catalog remains available. If no catalog is available,
+token usage is still counted and the affected turns are reported as unpriced.
 
-```json
-{
-  "id": "gemini",
-  "name": "Gemini",
-  "files": {
-    "roots": ["~/.gemini/telemetry"],
-    "recursive": true,
-    "extensions": ["jsonl"]
-  },
-  "event": {
-    "matches": [
-      { "path": ["event_name"], "equals": "gemini_api_response" }
-    ],
-    "workspacePath": ["workspace"],
-    "workspaceDefault": "Gemini",
-    "modelPath": ["model"],
-    "modelDefault": "gemini",
-    "inputTokensPath": ["usage_metadata", "prompt_token_count"],
-    "outputTokensPath": ["usage_metadata", "candidates_token_count"],
-    "cacheReadTokensPath": ["usage_metadata", "cached_content_token_count"],
-    "totalTokensPath": ["usage_metadata", "total_token_count"]
-  },
-  "pricing": [
-    {
-      "model": "gemini-2.5-pro",
-      "aliases": ["models/gemini-2.5-pro"],
-      "input": 1.25,
-      "output": 10.0,
-      "cacheRead": 0.31
-    }
-  ]
-}
-```
+The same model can be sold by multiple providers at different prices. When a
+transcript includes a provider-qualified ID, such as
+`google/gemini-2.5-pro`, Kill the Bill uses that exact provider. For the
+unqualified model IDs normally emitted by Claude Code and Codex, the direct
+model vendor is preferred deterministically (for example Anthropic for Claude
+and OpenAI for GPT models).
 
-Prices are USD per million tokens. If pricing is omitted, Kill the Bill tries to
-resolve public provider/model pricing from the cached `models.dev` catalog.
-Local rules always win, so keep explicit pricing here for proxies, private
-models, discounts, or enterprise rates.
+Do not add hardcoded price overrides. Pricing corrections should be contributed
+upstream to `models.dev` so every catalog consumer receives the same fix.
 
-If your logs use different field names, change the `path` arrays to match the
-JSON shape. If you want to keep rules elsewhere, set
-`KILL_THE_BILL_PROVIDER_DIR` to that folder before launching the app.
+## Adding a harness
 
-For example, this JSONL record would match the rule above:
+Harness support is implemented with a native parser under
+`Sources/KillTheBill/DataSources/`. A new harness should include:
 
-```json
-{"event_name":"gemini_api_response","workspace":"my-app","model":"gemini-2.5-pro","usage_metadata":{"prompt_token_count":1200,"candidates_token_count":300,"cached_content_token_count":200,"total_token_count":1700}}
-```
+- A stable case in `Harness` and discovery that honors the user's enabled set.
+- A parser that handles malformed or partial records without discarding an
+  otherwise valid session.
+- Fixtures covering token fields, model IDs, timestamps, deduplication, and
+  sessions with unavailable pricing.
+- Settings and documentation updates describing where its local logs are read.
 
-Custom providers are intentionally declarative. If a provider needs a non-JSONL
-format or more complex parsing, add a new parser under
-`Sources/KillTheBill/DataSources/`.
-
-For tools that log provider-qualified model IDs such as
-`google/gemini-2.5-pro`, public pricing can often be resolved automatically. The
-catalog is cached at `~/.kill-the-bill/cache/models-dev-api.json` for 24 hours
-and failure falls back to token tracking without cost.
-
-For Codex proxies, a smaller pricing-only rule is enough because Codex already
-has a built-in transcript parser:
-
-```json
-{
-  "id": "my-codex-proxy",
-  "name": "My Codex Proxy",
-  "pricing": [
-    {
-      "model": "gpt-5.5",
-      "aliases": ["gpt-5-5"],
-      "input": 5.0,
-      "output": 30.0,
-      "cacheRead": 0.5,
-      "cacheWrite": 0.0
-    }
-  ]
-}
-```
+Generic JSON CustomProvider rules and local pricing overrides are intentionally
+not supported. Keeping parsers native makes session-level details and future
+schema migrations explicit and testable.

@@ -1,78 +1,106 @@
+import AppKit
 import SwiftUI
-import ServiceManagement
 
 @main
 struct KillTheBillApp: App {
-    @State private var store = UsageStore()
-    @AppStorage("launchAtLogin") private var launchAtLogin = false
-    @AppStorage("showEvents") private var showEvents = false
+    @State private var settings: AppSettings
+    @State private var store: UsageStore
+    @State private var updater: UpdateManager
+    @State private var launchAtLoginManager: LaunchAtLoginManager
+    @State private var settingsWindowController: SettingsWindowController
+    @State private var didStart = false
+
+    init() {
+        let settings = AppSettings()
+        let store = UsageStore(settings: settings)
+        let updater = UpdateManager()
+        let launchAtLoginManager = LaunchAtLoginManager()
+        let settingsWindowController = SettingsWindowController(
+            settings: settings,
+            store: store,
+            updater: updater,
+            launchAtLoginManager: launchAtLoginManager
+        )
+
+        _settings = State(initialValue: settings)
+        _store = State(initialValue: store)
+        _updater = State(initialValue: updater)
+        _launchAtLoginManager = State(initialValue: launchAtLoginManager)
+        _settingsWindowController = State(initialValue: settingsWindowController)
+    }
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarView(store: store, launchAtLogin: $launchAtLogin, showEvents: $showEvents)
+            MenuBarView(
+                store: store,
+                settings: settings,
+                updater: updater,
+                onOpenSettings: settingsWindowController.show
+            )
         } label: {
             menuBarLabel
+                .onAppear(perform: startServicesIfNeeded)
         }
         .menuBarExtraStyle(.window)
-        .onChange(of: launchAtLogin) { _, enabled in
-            setLaunchAtLogin(enabled)
-        }
     }
 
     private var menuBarLabel: some View {
         HStack(spacing: 4) {
             Image(systemName: "brain.fill")
                 .symbolRenderingMode(.hierarchical)
-            Text(showEvents ? eventsLabel : costLabel)
+            Text(settings.showEvents ? eventsLabel : costLabel)
                 .font(.system(.caption, design: .monospaced, weight: .medium))
-                .foregroundStyle(showEvents ? eventsColor : costColor)
+                .foregroundStyle(settings.showEvents ? eventsColor : costColor)
         }
-        .onAppear { store.start() }
     }
+
+    private var l10n: AppLocalizer { AppLocalizer(language: settings.language) }
 
     private var costLabel: String {
-        let cost = store.usage.monthlyCostUSD
-        if cost == 0 { return "$0/mo" }
-        if cost < 1 { return String(format: "$%.2f/mo", cost) }
-        return String(format: "$%.1f/mo", cost)
+        l10n.format("menubar.cost", l10n.currency(store.usage.monthlyCostUSD))
     }
 
-    /// Mirrors the bash statusline's threshold bands when Flow is the source
-    /// (green <80%, orange 80-94%, red >=95%); falls back to the flat-dollar
-    /// bands used before Flow was added when Flow is unavailable.
     private var costColor: Color {
-        if case .flow(let percentage, let effectiveLimit, _) = store.usage.monthlyCostSource,
-           effectiveLimit > 0 {
-            if percentage < 80 { return .green }
-            if percentage < 95 { return .orange }
-            return .red
+        if case .flow(let percentage, let limit, _) = store.usage.monthlyCostSource,
+           limit > 0 {
+            return thresholdColor(percentage / 100)
         }
-        let cost = store.usage.monthlyCostUSD
-        if cost < 50 { return .green }
-        if cost < 150 { return .orange }
-        return .red
+        if settings.monthlyCostLimit > 0 {
+            return thresholdColor(store.usage.monthlyCostUSD / settings.monthlyCostLimit)
+        }
+        return .green
     }
 
     private var eventsLabel: String {
-        let n = store.usage.turnCount
-        if n >= 1000 { return String(format: "%.1fk events", Double(n) / 1000) }
-        return "\(n) events"
+        l10n.plural(
+            singular: "menubar.event.one",
+            plural: "menubar.event.many",
+            count: store.usage.turnCount
+        )
     }
 
     private var eventsColor: Color {
-        let n = store.usage.turnCount
-        if n < 500 { return .green }
-        if n < 1000 { return .orange }
+        let limit = max(settings.monthlyEventLimit, 1)
+        return thresholdColor(Double(store.usage.monthlyTurnCount) / Double(limit))
+    }
+
+    private func thresholdColor(_ fraction: Double) -> Color {
+        if fraction < 0.8 { return .green }
+        if fraction < 0.95 { return .orange }
         return .red
     }
 
-    private func setLaunchAtLogin(_ enabled: Bool) {
-        do {
-            if enabled {
-                try SMAppService.mainApp.register()
-            } else {
-                try SMAppService.mainApp.unregister()
-            }
-        } catch {}
+    private func startServicesIfNeeded() {
+        guard !didStart else { return }
+        didStart = true
+
+        guard AppInstanceGuard.shouldKeepCurrentInstance() else {
+            NSApplication.shared.terminate(nil)
+            return
+        }
+
+        store.start()
+        launchAtLoginManager.reconcile(desiredEnabled: settings.launchAtLogin)
+        updater.start(automaticChecksEnabled: settings.autoUpdateEnabled)
     }
 }

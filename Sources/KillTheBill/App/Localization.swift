@@ -39,8 +39,11 @@ struct AppLocalizer {
     }
 
     private var localizedBundle: Bundle {
+        // SwiftPM's resource bundler lowercases .lproj directory names
+        // (e.g. pt-BR.lproj -> pt-br.lproj), so look up by the lowercased
+        // identifier rather than the region-cased one used for Locale.
         guard let path = Bundle.module.path(
-            forResource: language.resolvedIdentifier,
+            forResource: language.resolvedIdentifier.lowercased(),
             ofType: "lproj"
         ), let bundle = Bundle(path: path) else {
             return .module

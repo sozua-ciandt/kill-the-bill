@@ -6,18 +6,106 @@ import CryptoKit
 /// local transcript parsing (DailyUsage) remains the fallback and continues
 /// to power today's cost, per-project, and per-model breakdowns regardless.
 struct FlowBudgetUsage: Sendable, Equatable {
-    var percentage: Double
+    /// Percentage reported by Flow. This value is only informational because
+    /// it is calculated against Flow's own effective limit and can disagree
+    /// with the limit source selected by the user.
+    var reportedPercentage: Double?
     var consumedUSD: Double
-    var effectiveLimit: Double
+    var limit: Double?
+    var budgetLimit: Double?
+    var effectiveLimit: Double?
+    var individualBudget: Double?
     var limitType: String
     var renewalDate: String
     var status: String
     var fetchedAt: Date
 
-    /// Flow reports `limit_type == "NO_LIMIT"` (or a zero limit) when the org
-    /// has not configured a budget cap for this user — treat as unlimited,
-    /// not as zero consumption.
-    var isUnlimited: Bool { effectiveLimit <= 0 }
+    var isUnlimited: Bool {
+        limitType.uppercased() == "NO_LIMIT"
+    }
+
+    func resolved(for policy: FlowLimitPolicy) -> ResolvedFlowBudgetUsage {
+        let selected = resolvedLimit(for: policy)
+        let explicitlyUnlimited = limitType.uppercased() == "NO_LIMIT"
+        let isUnavailable = selected == nil && !explicitlyUnlimited
+        let percentage: Double
+
+        if let selected {
+            percentage = consumedUSD / selected.value * 100
+        } else if explicitlyUnlimited || policy == .automatic {
+            percentage = reportedPercentage ?? 0
+        } else {
+            // An explicitly-selected property is not present in this response.
+            // Do not reuse Flow's percentage because it belongs to another limit.
+            percentage = 0
+        }
+
+        return ResolvedFlowBudgetUsage(
+            consumedUSD: consumedUSD,
+            limit: selected?.value,
+            limitSource: selected?.source,
+            percentage: percentage,
+            isUnlimited: explicitlyUnlimited,
+            isLimitUnavailable: isUnavailable,
+            renewalDate: renewalDate
+        )
+    }
+
+    private func resolvedLimit(for policy: FlowLimitPolicy) -> (value: Double, source: FlowLimitPolicy)? {
+        guard limitType.uppercased() != "NO_LIMIT" else { return nil }
+
+        switch policy {
+        case .automatic:
+            if limitType.uppercased() == "INDIVIDUAL",
+               let value = individualBudget,
+               Self.isUsableLimit(value) {
+                return (value, .individual)
+            }
+
+            if let value = effectiveLimit, Self.isUsableLimit(value) {
+                return (value, .effective)
+            }
+            if let value = budgetLimit, Self.isUsableLimit(value) {
+                return (value, .tenant)
+            }
+            if let value = limit, Self.isUsableLimit(value) {
+                return (value, .tenant)
+            }
+            if let value = individualBudget, Self.isUsableLimit(value) {
+                return (value, .individual)
+            }
+            return nil
+
+        case .individual:
+            guard let value = individualBudget, Self.isUsableLimit(value) else { return nil }
+            return (value, .individual)
+
+        case .tenant:
+            if let value = budgetLimit, Self.isUsableLimit(value) {
+                return (value, .tenant)
+            }
+            guard let value = limit, Self.isUsableLimit(value) else { return nil }
+            return (value, .tenant)
+
+        case .effective:
+            guard let value = effectiveLimit, Self.isUsableLimit(value) else { return nil }
+            return (value, .effective)
+        }
+    }
+
+    private static func isUsableLimit(_ value: Double) -> Bool {
+        value.isFinite && value > 0
+    }
+}
+
+struct ResolvedFlowBudgetUsage: Sendable, Equatable {
+    let consumedUSD: Double
+    let limit: Double?
+    let limitSource: FlowLimitPolicy?
+    let percentage: Double
+    let isUnlimited: Bool
+    let isLimitUnavailable: Bool
+    let renewalDate: String
 }
 
 /// Fetches and caches Flow Platform budget consumption.
@@ -33,7 +121,6 @@ enum FlowBudgetClient {
     private static let consumptionURL = URL(string: "https://flow.ciandt.com/metrics-collector-api/rate-limit/me?mode=budget")!
     private static let requestTimeout: TimeInterval = 5
     private static let tokenExpiryMargin: TimeInterval = 60
-    static let cacheTTL: TimeInterval = 60
 
     // MARK: - Cache locations
 
@@ -44,13 +131,19 @@ enum FlowBudgetClient {
     private static var tokenCacheFile: URL { cacheDirectory.appendingPathComponent("flow-token.json") }
 
     private struct BudgetCacheDTO: Codable {
-        let percentage: Double
-        let consumedUSD: Double
-        let effectiveLimit: Double
-        let limitType: String
-        let renewalDate: String
-        let status: String
-        let fetchedAt: Double
+        let schemaVersion: Int?
+        let reportedPercentage: Double?
+        /// Kept decode-compatible with the cache written before schema v2.
+        let percentage: Double?
+        let consumedUSD: Double?
+        let limit: Double?
+        let budgetLimit: Double?
+        let effectiveLimit: Double?
+        let individualBudget: Double?
+        let limitType: String?
+        let renewalDate: String?
+        let status: String?
+        let fetchedAt: Double?
     }
 
     private struct TokenCacheDTO: Codable {
@@ -69,23 +162,21 @@ enum FlowBudgetClient {
     /// Last known-good budget usage, read straight from disk. Never touches the network.
     static func currentUsage() -> FlowBudgetUsage? {
         guard let data = try? Data(contentsOf: budgetCacheFile),
-              let dto = try? JSONDecoder().decode(BudgetCacheDTO.self, from: data) else {
+              let usage = decodeCachedUsage(data) else {
             return nil
         }
-        return FlowBudgetUsage(
-            percentage: dto.percentage,
-            consumedUSD: dto.consumedUSD,
-            effectiveLimit: dto.effectiveLimit,
-            limitType: dto.limitType,
-            renewalDate: dto.renewalDate,
-            status: dto.status,
-            fetchedAt: Date(timeIntervalSince1970: dto.fetchedAt)
-        )
+        return usage
     }
 
-    static func isStale(_ usage: FlowBudgetUsage?) -> Bool {
+    static func isStale(
+        _ usage: FlowBudgetUsage?,
+        ttl: TimeInterval = 60,
+        now: Date = Date()
+    ) -> Bool {
         guard let usage else { return true }
-        return Date().timeIntervalSince(usage.fetchedAt) > cacheTTL
+        let age = now.timeIntervalSince(usage.fetchedAt)
+        guard age >= 0 else { return true }
+        return age >= max(ttl, 0)
     }
 
     /// Performs the full auth + fetch flow. Returns nil on any failure (no Flow
@@ -204,40 +295,37 @@ enum FlowBudgetClient {
 
     /// The response is sometimes wrapped in one or two extra `data` envelopes
     /// depending on the proxy in front of Flow — unwrap defensively.
-    static func parseBudgetResponse(_ data: Data) -> FlowBudgetUsage? {
+    static func parseBudgetResponse(_ data: Data, fetchedAt: Date = Date()) -> FlowBudgetUsage? {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         let inner = unwrapNested(root)
-        guard let percentage = number(inner["percentage"]) else { return nil }
+        guard let consumedUSD = number(inner["consumed_usd"]) else { return nil }
 
         let status = inner["status"] as? String ?? ""
         let renewalDate = inner["renewal_date"] as? String ?? ""
         let limitType = inner["limit_type"] as? String ?? ""
-        let consumedUSD = number(inner["consumed_usd"]) ?? 0
-        var effectiveLimit = number(inner["effective_limit"])
-            ?? number(inner["budget_limit"])
-            ?? number(inner["limit"])
-            ?? 0
-        if limitType == "NO_LIMIT" { effectiveLimit = 0 }
 
         return FlowBudgetUsage(
-            percentage: percentage,
+            reportedPercentage: number(inner["percentage"]),
             consumedUSD: consumedUSD,
-            effectiveLimit: effectiveLimit,
+            limit: number(inner["limit"]),
+            budgetLimit: number(inner["budget_limit"]),
+            effectiveLimit: number(inner["effective_limit"]),
+            individualBudget: number(inner["individual_budget"]),
             limitType: limitType,
             renewalDate: renewalDate,
             status: status,
-            fetchedAt: Date()
+            fetchedAt: fetchedAt
         )
     }
 
     /// The Flow proxy sometimes adds an extra `{"data": ...}` envelope depending
     /// on how many layers of gateway sit in front of the endpoint, so unwrap
     /// recursively rather than assuming a fixed depth: descend through `data`
-    /// wrappers until we reach the object that actually carries `percentage`,
+    /// wrappers until we reach the object that actually carries `consumed_usd`,
     /// or run out of `data` levels.
     private static func unwrapNested(_ root: [String: Any]) -> [String: Any] {
         var current = root
-        while current["percentage"] == nil, let nested = current["data"] as? [String: Any] {
+        while current["consumed_usd"] == nil, let nested = current["data"] as? [String: Any] {
             current = nested
         }
         return current
@@ -247,25 +335,56 @@ enum FlowBudgetClient {
         if let n = any as? NSNumber { return n.doubleValue }
         if let d = any as? Double { return d }
         if let i = any as? Int { return Double(i) }
+        if let string = any as? String { return Double(string) }
         return nil
     }
 
     // MARK: - Disk cache I/O
 
     private static func writeCache(_ usage: FlowBudgetUsage) {
+        try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+        guard let data = encodeCachedUsage(usage) else { return }
+        try? data.write(to: budgetCacheFile, options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: budgetCacheFile.path)
+    }
+
+    static func decodeCachedUsage(_ data: Data) -> FlowBudgetUsage? {
+        guard let dto = try? JSONDecoder().decode(BudgetCacheDTO.self, from: data),
+              let consumedUSD = dto.consumedUSD,
+              let fetchedAt = dto.fetchedAt else {
+            return nil
+        }
+
+        return FlowBudgetUsage(
+            reportedPercentage: dto.reportedPercentage ?? dto.percentage,
+            consumedUSD: consumedUSD,
+            limit: dto.limit,
+            budgetLimit: dto.budgetLimit,
+            effectiveLimit: dto.effectiveLimit,
+            individualBudget: dto.individualBudget,
+            limitType: dto.limitType ?? "",
+            renewalDate: dto.renewalDate ?? "",
+            status: dto.status ?? "",
+            fetchedAt: Date(timeIntervalSince1970: fetchedAt)
+        )
+    }
+
+    static func encodeCachedUsage(_ usage: FlowBudgetUsage) -> Data? {
         let dto = BudgetCacheDTO(
-            percentage: usage.percentage,
+            schemaVersion: 2,
+            reportedPercentage: usage.reportedPercentage,
+            percentage: nil,
             consumedUSD: usage.consumedUSD,
+            limit: usage.limit,
+            budgetLimit: usage.budgetLimit,
             effectiveLimit: usage.effectiveLimit,
+            individualBudget: usage.individualBudget,
             limitType: usage.limitType,
             renewalDate: usage.renewalDate,
             status: usage.status,
             fetchedAt: usage.fetchedAt.timeIntervalSince1970
         )
-        try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
-        guard let data = try? JSONEncoder().encode(dto) else { return }
-        try? data.write(to: budgetCacheFile)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: budgetCacheFile.path)
+        return try? JSONEncoder().encode(dto)
     }
 
     private static func readTokenCache() -> TokenCacheDTO? {
@@ -276,7 +395,7 @@ enum FlowBudgetClient {
     private static func writeTokenCache(_ dto: TokenCacheDTO) {
         try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
         guard let data = try? JSONEncoder().encode(dto) else { return }
-        try? data.write(to: tokenCacheFile)
+        try? data.write(to: tokenCacheFile, options: .atomic)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tokenCacheFile.path)
     }
 

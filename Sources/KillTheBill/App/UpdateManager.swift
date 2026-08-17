@@ -329,7 +329,7 @@ protocol UpdateBundleValidating: Sendable {
     ) async throws -> ValidatedUpdateBundle
 }
 
-struct DeveloperIDUpdateBundleValidator: UpdateBundleValidating, @unchecked Sendable {
+struct CodeSignatureUpdateBundleValidator: UpdateBundleValidating, @unchecked Sendable {
     let runner: any UpdateCommandRunning
     let fileManager: FileManager
 
@@ -411,27 +411,25 @@ struct DeveloperIDUpdateBundleValidator: UpdateBundleValidating, @unchecked Send
             executable: URL(fileURLWithPath: "/usr/bin/codesign"),
             arguments: ["-dv", "--verbose=4", applicationURL.path]
         )
-        guard signatureDetails.terminationStatus == 0,
-              signatureDetails.output.contains("Authority=Developer ID Application:"),
-              let newTeamIdentifier = Self.teamIdentifier(from: signatureDetails.output) else {
-            throw UpdateFailure.untrustedBundle("a Developer ID Application signature is required.")
-        }
-
-        let gatekeeperCheck = try await runner.run(
-            executable: URL(fileURLWithPath: "/usr/sbin/spctl"),
-            arguments: ["--assess", "--type", "execute", "--verbose=4", applicationURL.path]
-        )
-        guard gatekeeperCheck.terminationStatus == 0 else {
+        guard signatureDetails.terminationStatus == 0 else {
             throw UpdateFailure.untrustedBundle(
-                gatekeeperCheck.output.trimmingCharacters(in: .whitespacesAndNewlines)
+                signatureDetails.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        }
+        let newTeamIdentifier = Self.teamIdentifier(from: signatureDetails.output)
+        guard newTeamIdentifier != nil || signatureDetails.output.contains("Signature=adhoc") else {
+            throw UpdateFailure.untrustedBundle(
+                "the release is neither Developer ID signed nor ad-hoc signed."
             )
         }
 
-        // Existing versions were built locally and ad-hoc signed. That one-time
-        // bootstrap is accepted only because the new app independently passes
-        // Developer ID and Gatekeeper checks above. Once a Developer ID build is
-        // installed, every subsequent update must retain the same Team ID.
+        // This project ships ad-hoc-signed releases (no Apple Developer
+        // account), so a real Developer ID team is the exception rather than
+        // the rule; it's still accepted so signed releases keep working if
+        // that ever changes. Team continuity is only enforced when both the
+        // installed app and the incoming release carry a real team.
         if let currentTeamIdentifier = try await currentTeamIdentifier(at: currentApplicationURL),
+           let newTeamIdentifier,
            currentTeamIdentifier != newTeamIdentifier {
             throw UpdateFailure.untrustedBundle(
                 "Developer Team changed from \(currentTeamIdentifier) to \(newTeamIdentifier)."
@@ -441,7 +439,7 @@ struct DeveloperIDUpdateBundleValidator: UpdateBundleValidating, @unchecked Send
         return ValidatedUpdateBundle(
             applicationURL: applicationURL,
             version: version,
-            teamIdentifier: newTeamIdentifier
+            teamIdentifier: newTeamIdentifier ?? ""
         )
     }
 
@@ -606,7 +604,7 @@ final class UpdateManager {
         self.archiveExtractor = archiveExtractor
             ?? DittoUpdateArchiveExtractor(runner: commandRunner)
         self.bundleValidator = bundleValidator
-            ?? DeveloperIDUpdateBundleValidator(runner: commandRunner, fileManager: fileManager)
+            ?? CodeSignatureUpdateBundleValidator(runner: commandRunner, fileManager: fileManager)
         self.applicationController = applicationController
             ?? SystemUpdateApplicationController(runner: commandRunner)
         self.fileManager = fileManager

@@ -291,11 +291,11 @@ final class UpdateManagerTests: XCTestCase {
 }
 
 @MainActor
-final class DeveloperIDUpdateBundleValidatorTests: XCTestCase {
-    func testAllowsOneTimeBootstrapFromAdHocToNotarizedDeveloperID() async throws {
+final class CodeSignatureUpdateBundleValidatorTests: XCTestCase {
+    func testAllowsBootstrapFromAdHocToDeveloperID() async throws {
         let fixture = try UpdateFixture()
         let runner = SignatureCommandRunner(currentTeamIdentifier: nil, newTeamIdentifier: "TEAM123")
-        let validator = DeveloperIDUpdateBundleValidator(runner: runner)
+        let validator = CodeSignatureUpdateBundleValidator(runner: runner)
 
         let validated = try await validator.validate(
             applicationURL: fixture.newApplicationURL,
@@ -308,13 +308,29 @@ final class DeveloperIDUpdateBundleValidatorTests: XCTestCase {
         XCTAssertEqual(validated.version, SemanticVersion("0.5.0"))
     }
 
+    func testAllowsAdHocToAdHocUpdateWhenNoDeveloperIDIsConfigured() async throws {
+        let fixture = try UpdateFixture()
+        let runner = SignatureCommandRunner(currentTeamIdentifier: nil, newTeamIdentifier: nil)
+        let validator = CodeSignatureUpdateBundleValidator(runner: runner)
+
+        let validated = try await validator.validate(
+            applicationURL: fixture.newApplicationURL,
+            for: fixture.release,
+            currentApplicationURL: fixture.currentApplicationURL,
+            expectedBundleIdentifier: UpdateFixture.bundleIdentifier
+        )
+
+        XCTAssertEqual(validated.teamIdentifier, "")
+        XCTAssertEqual(validated.version, SemanticVersion("0.5.0"))
+    }
+
     func testRejectsDeveloperTeamChangeAfterBootstrap() async throws {
         let fixture = try UpdateFixture()
         let runner = SignatureCommandRunner(
             currentTeamIdentifier: "OLDTEAM",
             newTeamIdentifier: "NEWTEAM"
         )
-        let validator = DeveloperIDUpdateBundleValidator(runner: runner)
+        let validator = CodeSignatureUpdateBundleValidator(runner: runner)
 
         do {
             _ = try await validator.validate(
@@ -339,7 +355,7 @@ final class DeveloperIDUpdateBundleValidatorTests: XCTestCase {
             newTeamIdentifier: "TEAM123",
             currentSignatureIsValid: false
         )
-        let validator = DeveloperIDUpdateBundleValidator(runner: runner)
+        let validator = CodeSignatureUpdateBundleValidator(runner: runner)
 
         do {
             _ = try await validator.validate(
@@ -442,13 +458,10 @@ private final class FakeUpdateApplicationController: UpdateApplicationControllin
 
 private struct SignatureCommandRunner: UpdateCommandRunning {
     let currentTeamIdentifier: String?
-    let newTeamIdentifier: String
+    let newTeamIdentifier: String?
     var currentSignatureIsValid = true
 
     func run(executable: URL, arguments: [String]) async throws -> UpdateCommandResult {
-        if executable.path == "/usr/sbin/spctl" {
-            return UpdateCommandResult(terminationStatus: 0, output: "accepted")
-        }
         if arguments.first == "--verify" {
             let isCurrent = arguments.last?.contains("Current/KillTheBill.app") == true
             return UpdateCommandResult(
@@ -458,16 +471,14 @@ private struct SignatureCommandRunner: UpdateCommandRunning {
         }
         if executable.path == "/usr/bin/codesign", arguments.first == "-dv" {
             let isCurrent = arguments.last?.contains("Current/KillTheBill.app") == true
-            if isCurrent, let currentTeamIdentifier {
-                return signatureOutput(teamIdentifier: currentTeamIdentifier)
+            let teamIdentifier = isCurrent ? currentTeamIdentifier : newTeamIdentifier
+            if let teamIdentifier {
+                return signatureOutput(teamIdentifier: teamIdentifier)
             }
-            if isCurrent {
-                return UpdateCommandResult(
-                    terminationStatus: 0,
-                    output: "Signature=adhoc\nTeamIdentifier=not set\n"
-                )
-            }
-            return signatureOutput(teamIdentifier: newTeamIdentifier)
+            return UpdateCommandResult(
+                terminationStatus: 0,
+                output: "Signature=adhoc\nTeamIdentifier=not set\n"
+            )
         }
         return UpdateCommandResult(terminationStatus: 1, output: "unexpected command")
     }

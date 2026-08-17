@@ -35,7 +35,7 @@ if [ "$macos_major" -lt 14 ]; then
   fail "$DISPLAY_NAME requires macOS 14 or newer."
 fi
 
-for command in curl ditto codesign spctl; do
+for command in curl ditto codesign; do
   if ! command -v "$command" >/dev/null 2>&1; then
     fail "$command is required."
   fi
@@ -84,24 +84,6 @@ validate_app() {
 
   if ! codesign --verify --deep --strict --verbose=2 "$app" >/dev/null 2>&1; then
     printf 'Code signature verification failed for %s\n' "$app" >&2
-    return 1
-  fi
-
-  signature_details="$(codesign -dv --verbose=4 "$app" 2>&1 || true)"
-  case "$signature_details" in
-    *"Authority=Developer ID Application:"*"TeamIdentifier="*) ;;
-    *)
-      printf 'A Developer ID Application signature is required for %s\n' "$app" >&2
-      return 1
-      ;;
-  esac
-  if printf '%s\n' "$signature_details" | grep -q 'TeamIdentifier=not set'; then
-    printf 'A Developer Team identifier is required for %s\n' "$app" >&2
-    return 1
-  fi
-
-  if ! spctl --assess --type execute --verbose=4 "$app" >/dev/null 2>&1; then
-    printf 'Gatekeeper rejected %s\n' "$app" >&2
     return 1
   fi
 }
@@ -266,7 +248,7 @@ archive="$WORK_DIR/$APP_NAME.app.zip"
 expanded="$WORK_DIR/Expanded"
 mkdir -p "$expanded"
 
-log "Downloading the latest notarized $DISPLAY_NAME release..."
+log "Downloading the latest $DISPLAY_NAME release..."
 curl -fL --retry 2 --connect-timeout 15 "$ASSET_URL" -o "$archive"
 
 log "Extracting and validating the application..."

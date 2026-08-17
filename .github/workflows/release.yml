@@ -21,96 +21,31 @@ jobs:
       - name: Run tests
         run: make test
 
-      - name: Validate tag, version, and signing secrets
-        env:
-          APPLE_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_BASE64 }}
-          APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      - name: Validate tag matches Info.plist version
         run: |
           set -euo pipefail
           release_version="${GITHUB_REF_NAME#v}"
           plist_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)"
           test "$GITHUB_REF_NAME" = "v$release_version"
           test "$plist_version" = "$release_version"
-          test -n "$APPLE_DEVELOPER_ID_CERTIFICATE_BASE64"
-          test -n "$APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD"
-          test -n "$APPLE_SIGNING_IDENTITY"
-          test -n "$APPLE_ID"
-          test -n "$APPLE_TEAM_ID"
-          test -n "$APPLE_APP_SPECIFIC_PASSWORD"
 
-      - name: Import Developer ID certificate
-        env:
-          APPLE_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_BASE64 }}
-          APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Build and bundle application
         run: |
           set -euo pipefail
-          certificate_path="$RUNNER_TEMP/developer-id-application.p12"
-          keychain_path="$RUNNER_TEMP/app-signing.keychain-db"
-
-          echo "$APPLE_DEVELOPER_ID_CERTIFICATE_BASE64" | base64 --decode > "$certificate_path"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain_path"
-          security set-keychain-settings -lut 21600 "$keychain_path"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain_path"
-          security import "$certificate_path" \
-            -P "$APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD" \
-            -A \
-            -k "$keychain_path"
-          security list-keychains -d user -s "$keychain_path"
-          security default-keychain -s "$keychain_path"
-          security set-key-partition-list \
-            -S apple-tool:,apple: \
-            -s \
-            -k "$KEYCHAIN_PASSWORD" \
-            "$keychain_path"
-          security find-identity -v -p codesigning "$keychain_path"
-
-      - name: Build and sign application bundle
-        env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-        run: |
-          set -euo pipefail
-          make bundle SIGNING_IDENTITY="$APPLE_SIGNING_IDENTITY"
+          make bundle
           app_bundle="$(make -s print-app-bundle)"
           test -d "$app_bundle/Contents/Resources/KillTheBill_KillTheBill.bundle"
           codesign --verify --deep --strict --verbose=2 "$app_bundle"
-          codesign -dv --verbose=4 "$app_bundle" 2>&1 | grep -F 'Authority=Developer ID Application:'
           printf 'APP_BUNDLE=%s\n' "$app_bundle" >> "$GITHUB_ENV"
 
-      - name: Create archive for notarization
+      - name: Create release archive
         run: |
           set -euo pipefail
           archive="$RUNNER_TEMP/KillTheBill.app.zip"
           ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$archive"
+          cd "$(dirname "$archive")"
+          shasum -a 256 "$(basename "$archive")" > KillTheBill.app.zip.sha256
           printf 'APP_ARCHIVE=%s\n' "$archive" >> "$GITHUB_ENV"
-
-      - name: Notarize application bundle
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-        run: |
-          set -euo pipefail
-          xcrun notarytool submit "$APP_ARCHIVE" \
-            --apple-id "$APPLE_ID" \
-            --team-id "$APPLE_TEAM_ID" \
-            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-            --wait
-
-      - name: Staple, assess, and rebuild final archive
-        run: |
-          set -euo pipefail
-          xcrun stapler staple "$APP_BUNDLE"
-          xcrun stapler validate "$APP_BUNDLE"
-          spctl --assess --type execute --verbose=4 "$APP_BUNDLE"
-          rm "$APP_ARCHIVE"
-          ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$APP_ARCHIVE"
-          cd "$(dirname "$APP_ARCHIVE")"
-          shasum -a 256 "$(basename "$APP_ARCHIVE")" > KillTheBill.app.zip.sha256
           printf 'APP_CHECKSUM=%s\n' "$RUNNER_TEMP/KillTheBill.app.zip.sha256" >> "$GITHUB_ENV"
 
       - name: Validate final distributable
@@ -125,8 +60,6 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$validated_app/Contents/Info.plist")" \
             = 'dev.sozua-ciandt.kill-the-bill'
           codesign --verify --deep --strict --verbose=2 "$validated_app"
-          spctl --assess --type execute --verbose=4 "$validated_app"
-          xcrun stapler validate "$validated_app"
           cd "$(dirname "$APP_ARCHIVE")"
           shasum -a 256 -c "$APP_CHECKSUM"
 
@@ -151,7 +84,3 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest
-
-      - name: Delete temporary keychain
-        if: always()
-        run: security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" || true

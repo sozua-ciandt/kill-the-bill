@@ -23,7 +23,6 @@ final class DistributionTests: XCTestCase {
 
         XCTAssertTrue(installer.contains("releases/latest/download/$APP_NAME.app.zip"))
         XCTAssertTrue(installer.contains("codesign --verify --deep --strict"))
-        XCTAssertTrue(installer.contains("spctl --assess --type execute"))
         XCTAssertTrue(installer.contains("EXPECTED_BUNDLE_ID"))
         XCTAssertFalse(installer.contains("swift build"))
         XCTAssertFalse(installer.contains("xattr -dr com.apple.quarantine"))

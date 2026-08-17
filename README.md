@@ -10,10 +10,16 @@ Track Claude Code and Codex token usage and cost from your macOS menu bar.
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/sozua-ciandt/kill-the-bill/main/install.sh)"
 ```
 
-The installer downloads the latest notarized app from GitHub Releases, verifies
-its Developer ID signature with Gatekeeper, and installs `KillTheBill.app` into
-`/Applications`. If administrator permission is not available on a fresh
-install, it installs into `~/Applications` instead.
+The installer downloads the latest ad-hoc-signed app from GitHub Releases,
+verifies its bundle identity and code signature, and installs
+`KillTheBill.app` into `/Applications`. If administrator permission is not
+available on a fresh install, it installs into `~/Applications` instead.
+
+Releases aren't notarized (this project has no Apple Developer account), so
+macOS may show an "unidentified developer" warning if you download the
+`.app.zip` manually instead of using the installer above; installing via the
+script avoids this since `curl` doesn't apply the quarantine flag a browser
+download would.
 
 Requires macOS 14+. Xcode Command Line Tools are no longer required to install
 the app.
@@ -37,9 +43,9 @@ app without a separately signed privileged helper, so an app installed in a
 non-writable `/Applications` directory stops at “ready” and asks you to run the
 official installer above. The installer is the authorized path for that case.
 
-Versions up to 0.4.2 don't contain the updater and were locally/ad-hoc signed.
-Run the installer once to bootstrap onto the first notarized release; subsequent
-versions can check for updates from inside the app.
+Versions up to 0.4.2 don't contain the updater. Run the installer once to
+bootstrap onto a release with the updater; subsequent versions can check for
+updates from inside the app.
 
 ## Reinstall or update
 

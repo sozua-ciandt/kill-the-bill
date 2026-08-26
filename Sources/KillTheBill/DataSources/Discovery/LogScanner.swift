@@ -6,10 +6,22 @@ enum LogScanner {
     struct DiscoveredSources: Sendable {
         let claudeTranscriptDirs: [URL]
         let codexSessionRoot: URL?
+        let opencodeDB: URL?
+
+        init(
+            claudeTranscriptDirs: [URL],
+            codexSessionRoot: URL? = nil,
+            opencodeDB: URL? = nil
+        ) {
+            self.claudeTranscriptDirs = claudeTranscriptDirs
+            self.codexSessionRoot = codexSessionRoot
+            self.opencodeDB = opencodeDB
+        }
 
         var sourceCount: Int {
             claudeTranscriptDirs.count
                 + (codexSessionRoot == nil ? 0 : 1)
+                + (opencodeDB == nil ? 0 : 1)
         }
     }
 
@@ -22,6 +34,9 @@ enum LogScanner {
                 : [],
             codexSessionRoot: trackedHarnesses.contains(.codex)
                 ? discoverCodexSessionRoot()
+                : nil,
+            opencodeDB: trackedHarnesses.contains(.opencode)
+                ? discoverOpenCodeDB()
                 : nil
         )
     }
@@ -177,5 +192,12 @@ enum LogScanner {
         }
 
         return sessionsRoot
+    }
+
+    private static func discoverOpenCodeDB() -> URL? {
+        let dbPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".local/share/opencode/opencode.db")
+        guard FileManager.default.fileExists(atPath: dbPath.path) else { return nil }
+        return dbPath
     }
 }

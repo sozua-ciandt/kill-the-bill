@@ -209,6 +209,24 @@ final class FlowBudgetClientTests: XCTestCase {
         XCTAssertNil(FlowBudgetClient.extractAuthContext(fromJWT: token))
     }
 
+    func testFlowModelsDecodingFromDifferentNestingLevels() throws {
+        // Deep nested wrapper (data.data.enabledModels)
+        let deepNestedJson = """
+        {"data":{"data":{"enabledModels":[{"name":"gpt-5.6-sol","vendor":"openai","inputCostPerMillionToken":2.5,"outputCostPerMillionToken":10.0}]}}}
+        """
+        let pricing1 = FlowPricingCatalog.decodePricing(from: Data(deepNestedJson.utf8))
+        assertDoubleEqual(pricing1["gpt-5.6-sol"]?.input ?? -1, 2.5)
+        assertDoubleEqual(pricing1["gpt-5.6-sol"]?.output ?? -1, 10.0)
+
+        // Direct array
+        let arrayJson = """
+        [{"name":"deepseek-chat","vendor":"deepseek","inputCostPerMillionToken":0.14,"outputCostPerMillionToken":0.28}]
+        """
+        let pricing2 = FlowPricingCatalog.decodePricing(from: Data(arrayJson.utf8))
+        assertDoubleEqual(pricing2["deepseek-chat"]?.input ?? -1, 0.14)
+        assertDoubleEqual(pricing2["deepseek-chat"]?.output ?? -1, 0.28)
+    }
+
     private func base64URLEncode(_ data: Data) -> String {
         data.base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")

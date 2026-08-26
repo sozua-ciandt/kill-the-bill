@@ -109,7 +109,11 @@
 "settings.update.downloading" = "Baixando atualização…";
 "settings.update.installing" = "Instalando e reiniciando…";
 "settings.update.error" = "Falha ao buscar atualização: %@";
-"settings.usage.title" = "Limites de uso";
+"settings.usage.title" = "Uso e ordenação";
+"settings.overview_ranking" = "Ordenação na visão geral";
+"settings.overview_ranking.description" = "Critério de ordenação para os top 5 projetos e modelos na visão geral.";
+"settings.overview_ranking.monthly" = "Gastos do mês";
+"settings.overview_ranking.daily" = "Gastos do dia";
 "settings.cost_limit" = "Limite mensal de custo";
 "settings.cost_limit.description" = "Usado quando o Flow não fornece um orçamento.";
 "settings.event_limit" = "Limite mensal de eventos";
@@ -128,6 +132,7 @@
 "settings.harnesses.description" = "Somente os harnesses ativos são analisados neste Mac.";
 "settings.harness.claude" = "Claude Code";
 "settings.harness.codex" = "Codex";
+"settings.harness.opencode" = "OpenCode";
 "settings.about.title" = "Sobre o Kill the Bill";
 "settings.about.description" = "Visibilidade local de consumo e custo de IA na barra de menus.";
 "settings.about.version" = "Versão %@";
@@ -136,6 +141,7 @@
 
 "harness.claude" = "Claude Code";
 "harness.codex" = "Codex";
+"harness.opencode" = "OpenCode";
 "common.local" = "local";
 "common.flow" = "Flow";
 "common.events.short" = "ev.";

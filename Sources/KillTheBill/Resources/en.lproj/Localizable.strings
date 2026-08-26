@@ -109,7 +109,11 @@
 "settings.update.downloading" = "Downloading update…";
 "settings.update.installing" = "Installing and relaunching…";
 "settings.update.error" = "Update check failed: %@";
-"settings.usage.title" = "Usage limits";
+"settings.usage.title" = "Usage & rankings";
+"settings.overview_ranking" = "Overview ranking";
+"settings.overview_ranking.description" = "Ranking criterion for top 5 projects and models in overview.";
+"settings.overview_ranking.monthly" = "Monthly spend";
+"settings.overview_ranking.daily" = "Daily spend";
 "settings.cost_limit" = "Monthly cost limit";
 "settings.cost_limit.description" = "Used when Flow does not provide a budget.";
 "settings.event_limit" = "Monthly event limit";
@@ -128,6 +132,7 @@
 "settings.harnesses.description" = "Only enabled harnesses are scanned on this Mac.";
 "settings.harness.claude" = "Claude Code";
 "settings.harness.codex" = "Codex";
+"settings.harness.opencode" = "OpenCode";
 "settings.about.title" = "About Kill the Bill";
 "settings.about.description" = "Local AI usage and cost insights for your menu bar.";
 "settings.about.version" = "Version %@";
@@ -136,6 +141,7 @@
 
 "harness.claude" = "Claude Code";
 "harness.codex" = "Codex";
+"harness.opencode" = "OpenCode";
 "common.local" = "local";
 "common.flow" = "Flow";
 "common.events.short" = "ev.";

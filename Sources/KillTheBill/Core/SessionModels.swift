@@ -3,6 +3,7 @@ import Foundation
 enum SessionHarness: String, Codable, CaseIterable, Sendable {
     case claudeCode
     case codex
+    case opencode
 }
 
 struct UsageSessionID: Hashable, Codable, Sendable {
@@ -120,7 +121,7 @@ struct SessionMCPUsage: Identifiable, Codable, Equatable, Sendable {
     var resultTokens: SessionResultTokenEstimate
 }
 
-enum SessionDataCompleteness: String, Codable, Sendable {
+enum SessionDataCompleteness: String, Codable, Equatable, Sendable {
     case complete
     case partial
     case summaryOnly

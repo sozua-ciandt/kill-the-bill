@@ -24,4 +24,9 @@ enum ParserHelpers {
         if let day = filter.day, calendar.component(.day, from: date) != day { return false }
         return true
     }
+    static func matchesInterval(_ date: Date?, interval: DateInterval?) -> Bool {
+        guard let interval else { return true } 
+        guard let date else { return false }   
+        return interval.contains(date)
+    }
 }

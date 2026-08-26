@@ -18,6 +18,7 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(settings.flowLimitPolicy, .automatic)
         XCTAssertEqual(settings.trackedHarnesses, Set(Harness.allCases))
         XCTAssertEqual(settings.language, .system)
+        XCTAssertEqual(settings.overviewRanking, .monthly)
     }
 
     @MainActor
@@ -50,12 +51,14 @@ final class AppSettingsTests: XCTestCase {
         settings.flowLimitPolicy = .individual
         settings.trackedHarnesses = [.codex]
         settings.language = .portugueseBrazil
+        settings.overviewRanking = .daily
 
         let restored = AppSettings(defaults: fixture.defaults)
 
         XCTAssertEqual(restored.snapshot, settings.snapshot)
         XCTAssertEqual(restored.trackedHarnesses, [.codex])
         XCTAssertEqual(restored.language, .portugueseBrazil)
+        XCTAssertEqual(restored.overviewRanking, .daily)
     }
 
     @MainActor

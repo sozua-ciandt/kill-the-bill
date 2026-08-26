@@ -174,9 +174,11 @@ final class UsageStore {
 
         let codexToday = CodexLogParser.parseSessions(files: todayCodexFiles, pricing: pricing, dateFilter: todayFilter)
         let codexMonth = CodexLogParser.parseSessions(files: monthCodexFiles, pricing: pricing, dateFilter: monthFilter)
+        let opencodeToday = OpenCodeDBMonitor.parseUsage(dbURL: sources.opencodeDB, pricing: pricing, dateFilter: todayFilter)
+        let opencodeMonth = OpenCodeDBMonitor.parseUsage(dbURL: sources.opencodeDB, pricing: pricing, dateFilter: monthFilter)
 
-        let todayCombined = DailyUsage.combined([claudeToday, codexToday])
-        let monthCombined = DailyUsage.combined([claudeMonth, codexMonth])
+        let todayCombined = DailyUsage.combined([claudeToday, codexToday, opencodeToday])
+        let monthCombined = DailyUsage.combined([claudeMonth, codexMonth, opencodeMonth])
 
         // Flow Platform's budget API is the primary source for the month-to-date
         // headline figure when available; locally-parsed transcripts remain the
@@ -248,6 +250,7 @@ final class UsageStore {
             claudeTranscriptDirs: sources.claudeTranscriptDirs,
             claudeFiles: claudeFiles,
             codexFiles: codexFiles,
+            opencodeDB: sources.opencodeDB,
             pricing: pricing,
             interval: interval
         )

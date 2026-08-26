@@ -35,6 +35,17 @@ enum ModelsDevPricingCatalog {
         }
     }
 
+    private static func fallbackPricing() -> [String: TokenPricing] {
+        return [
+            "claude-4-5-haiku": TokenPricing(input: 0.25, output: 1.25, cacheWrite: 0, cacheRead: 0.25),
+            "claude-haiku-4-5": TokenPricing(input: 0.25, output: 1.25, cacheWrite: 0, cacheRead: 0.25),
+            "claude-5-sonnet": TokenPricing(input: 3.0, output: 15.0, cacheWrite: 0, cacheRead: 3.0),
+            "claude-sonnet-5": TokenPricing(input: 3.0, output: 15.0, cacheWrite: 0, cacheRead: 3.0),
+            "gemini-3.7-flash": TokenPricing(input: 0.35, output: 0.70, cacheWrite: 0, cacheRead: 0.35),
+            "gpt-5.6-luna": TokenPricing(input: 0.50, output: 1.50, cacheWrite: 0, cacheRead: 0.50)
+        ]
+    }
+
     static func loadPricing() -> [String: TokenPricing] {
         if let data = cachedCatalogData(maxAge: cacheMaxAge),
            let pricing = decodedPricing(from: data) {
@@ -52,7 +63,7 @@ enum ModelsDevPricingCatalog {
             return pricing
         }
 
-        return [:]
+        return fallbackPricing()
     }
 
     static func decodePricing(from data: Data) -> [String: TokenPricing] {

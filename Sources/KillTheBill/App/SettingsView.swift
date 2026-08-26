@@ -218,6 +218,20 @@ struct SettingsView: View {
         settingsPane(title: l10n.text("settings.usage.title")) {
             settingsCard {
                 settingRow(
+                    title: l10n.text("settings.overview_ranking"),
+                    description: l10n.text("settings.overview_ranking.description")
+                ) {
+                    Picker("", selection: $settings.overviewRanking) {
+                        Text(l10n.text("settings.overview_ranking.monthly")).tag(OverviewRankingPeriod.monthly)
+                        Text(l10n.text("settings.overview_ranking.daily")).tag(OverviewRankingPeriod.daily)
+                    }
+                    .labelsHidden()
+                    .frame(width: 190)
+                }
+
+                cardDivider
+
+                settingRow(
                     title: l10n.text("settings.cost_limit"),
                     description: l10n.text("settings.cost_limit.description")
                 ) {
@@ -302,6 +316,8 @@ struct SettingsView: View {
                 harnessToggle(.claudeCode, title: l10n.text("settings.harness.claude"))
                 cardDivider
                 harnessToggle(.codex, title: l10n.text("settings.harness.codex"))
+                cardDivider
+                harnessToggle(.opencode, title: l10n.text("settings.harness.opencode"))
             }
         }
     }
@@ -309,7 +325,9 @@ struct SettingsView: View {
     private func harnessToggle(_ harness: Harness, title: String) -> some View {
         settingToggle(
             title: title,
-            description: harness == .claudeCode ? "~/.claude/projects" : "~/.codex/sessions",
+            description: harness == .claudeCode ? "~/.claude/projects" :
+                         harness == .codex ? "~/.codex/sessions" :
+                         "~/.local/share/opencode/opencode.db",
             isOn: Binding(
                 get: { settings.trackedHarnesses.contains(harness) },
                 set: { enabled in

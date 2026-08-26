@@ -32,6 +32,14 @@ enum FlowLimitPolicy: String, CaseIterable, Codable, Identifiable, Sendable {
 enum Harness: String, CaseIterable, Codable, Identifiable, Sendable {
     case claudeCode
     case codex
+    case opencode
+
+    var id: String { rawValue }
+}
+
+enum OverviewRankingPeriod: String, CaseIterable, Codable, Identifiable, Sendable {
+    case monthly
+    case daily
 
     var id: String { rawValue }
 }
@@ -47,6 +55,7 @@ struct SettingsSnapshot: Equatable, Sendable {
     let flowLimitPolicy: FlowLimitPolicy
     let trackedHarnesses: Set<Harness>
     let language: AppLanguage
+    let overviewRanking: OverviewRankingPeriod
 }
 
 @Observable
@@ -69,6 +78,7 @@ final class AppSettings {
         static let flowLimitPolicy = "flowLimitPolicy"
         static let trackedHarnesses = "trackedHarnesses"
         static let language = "language"
+        static let overviewRanking = "overviewRanking"
     }
 
     @ObservationIgnored private let defaults: UserDefaults
@@ -139,6 +149,10 @@ final class AppSettings {
         didSet { defaults.set(language.rawValue, forKey: Key.language) }
     }
 
+    var overviewRanking: OverviewRankingPeriod {
+        didSet { defaults.set(overviewRanking.rawValue, forKey: Key.overviewRanking) }
+    }
+
     var snapshot: SettingsSnapshot {
         SettingsSnapshot(
             autoUpdateEnabled: autoUpdateEnabled,
@@ -150,7 +164,8 @@ final class AppSettings {
             monthlyCostLimit: monthlyCostLimit,
             flowLimitPolicy: flowLimitPolicy,
             trackedHarnesses: trackedHarnesses,
-            language: language
+            language: language,
+            overviewRanking: overviewRanking
         )
     }
 
@@ -181,6 +196,9 @@ final class AppSettings {
         language = AppLanguage(
             rawValue: defaults.string(forKey: Key.language) ?? ""
         ) ?? .system
+        overviewRanking = OverviewRankingPeriod(
+            rawValue: defaults.string(forKey: Key.overviewRanking) ?? ""
+        ) ?? .monthly
     }
 
     private static var registeredDefaults: [String: Any] {
@@ -195,6 +213,7 @@ final class AppSettings {
             Key.flowLimitPolicy: FlowLimitPolicy.automatic.rawValue,
             Key.trackedHarnesses: Harness.allCases.map(\.rawValue),
             Key.language: AppLanguage.system.rawValue,
+            Key.overviewRanking: OverviewRankingPeriod.monthly.rawValue,
         ]
     }
 

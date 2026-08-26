@@ -119,6 +119,7 @@ struct ResolvedFlowBudgetUsage: Sendable, Equatable {
 enum FlowBudgetClient {
     private static let authEngineURL = URL(string: "https://flow.ciandt.com/auth-engine-api/v2/api-key/token")!
     private static let consumptionURL = URL(string: "https://flow.ciandt.com/metrics-collector-api/rate-limit/me?mode=budget")!
+    private static let modelsURL = URL(string: "https://flow.ciandt.com/api/ai-orchestrator/models/by-tenant")!
     private static let requestTimeout: TimeInterval = 5
     private static let tokenExpiryMargin: TimeInterval = 60
 
@@ -185,8 +186,14 @@ enum FlowBudgetClient {
     static func refresh() async -> FlowBudgetUsage? {
         guard let token = resolveAuthToken(),
               let context = extractAuthContext(fromJWT: token),
-              let accessToken = await resolveAccessToken(context: context),
-              let usage = await fetchBudget(accessToken: accessToken) else {
+              let accessToken = await resolveAccessToken(context: context) else {
+            return nil
+        }
+
+        async let fetchedUsage = fetchBudget(accessToken: accessToken)
+        async let _ = syncModelsCatalogIfNeeded(accessToken: accessToken)
+
+        guard let usage = await fetchedUsage else {
             return nil
         }
 
@@ -291,6 +298,32 @@ enum FlowBudgetClient {
         }
 
         return parseBudgetResponse(data)
+    }
+
+    // MARK: - Models catalog sync
+
+    static func syncModelsCatalogIfNeeded(accessToken: String) async {
+        guard FlowPricingCatalog.isCacheStale() else { return }
+        if let data = await fetchModelsCatalog(accessToken: accessToken) {
+            let pricing = FlowPricingCatalog.decodePricing(from: data)
+            if !pricing.isEmpty {
+                FlowPricingCatalog.cacheValidatedCatalog(data)
+            }
+        }
+    }
+
+    static func fetchModelsCatalog(accessToken: String) async -> Data? {
+        var request = URLRequest(url: modelsURL)
+        request.timeoutInterval = requestTimeout
+        request.setValue("application/json", forHTTPHeaderField: "accept")
+        request.setValue(accessToken, forHTTPHeaderField: "FlowToken")
+
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            return nil
+        }
+
+        return data
     }
 
     /// The response is sometimes wrapped in one or two extra `data` envelopes

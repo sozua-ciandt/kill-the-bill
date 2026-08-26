@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import XCTest
 @testable import KillTheBill
 
@@ -58,6 +59,47 @@ final class ParserProjectionContractTests: XCTestCase {
             claudeTranscriptDirs: [],
             claudeFiles: [],
             codexFiles: [file],
+            pricing: pricing
+        ).first)
+
+        assertSharedUsage(summary: summary, detail: detail)
+        XCTAssertEqual(summary.cacheWriteTokens, 100_000)
+    }
+
+    func testOpenCodeSummaryAndDetailProjectionsAgreeOnUsage() throws {
+        let temp = try TempDirectory()
+        let dbPath = temp.url.appendingPathComponent("opencode.db").path
+        let dbURL = URL(fileURLWithPath: dbPath)
+
+        var db: OpaquePointer?
+        guard sqlite3_open(dbPath, &db) == SQLITE_OK else {
+            XCTFail("Failed to open test db")
+            return
+        }
+        defer { sqlite3_close(db) }
+
+        let schema = """
+        CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT NOT NULL, vcs TEXT, name TEXT, icon_url TEXT, icon_url_override TEXT, icon_color TEXT, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, time_initialized INTEGER, sandboxes TEXT NOT NULL, commands TEXT);
+        CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, workspace_id TEXT, parent_id TEXT, slug TEXT NOT NULL, directory TEXT NOT NULL, path TEXT, title TEXT NOT NULL, version TEXT NOT NULL, share_url TEXT, summary_additions INTEGER, summary_deletions INTEGER, summary_files INTEGER, summary_diffs TEXT, metadata TEXT, cost REAL DEFAULT 0 NOT NULL, tokens_input INTEGER DEFAULT 0 NOT NULL, tokens_output INTEGER DEFAULT 0 NOT NULL, tokens_reasoning INTEGER DEFAULT 0 NOT NULL, tokens_cache_read INTEGER DEFAULT 0 NOT NULL, tokens_cache_write INTEGER DEFAULT 0 NOT NULL, revert TEXT, permission TEXT, agent TEXT, model TEXT, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, time_compacting INTEGER, time_archived INTEGER);
+        CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+        CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+        """
+        sqlite3_exec(db, schema, nil, nil, nil)
+
+        let ts: Int64 = 1786622400000
+        sqlite3_exec(db, "INSERT INTO project (id, worktree, sandboxes, time_created, time_updated) VALUES ('p1', '/tmp/contract-app', '[]', \(ts), \(ts));", nil, nil, nil)
+        sqlite3_exec(db, "INSERT INTO session (id, project_id, slug, directory, title, version, cost, tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write, agent, model, time_created, time_updated) VALUES ('s1', 'p1', 'slug', '/tmp/contract-app', 'Contract test', '1.0', 0, 0, 0, 0, 0, 0, 'build', '{\"id\":\"claude-sonnet-4-5\",\"providerID\":\"flow\"}', \(ts), \(ts));", nil, nil, nil)
+        sqlite3_exec(db, "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES ('m-u1', 's1', \(ts), \(ts), '{\"role\":\"user\",\"time\":{\"created\":\(ts)}}');", nil, nil, nil)
+        sqlite3_exec(db, "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES ('p-t1', 'm-u1', 's1', \(ts), \(ts), '{\"type\":\"text\",\"text\":\"Check usage\"}');", nil, nil, nil)
+        sqlite3_exec(db, "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES ('m-a1', 's1', \(ts+100), \(ts+100), '{\"parentID\":\"m-u1\",\"role\":\"assistant\",\"mode\":\"build\",\"tokens\":{\"input\":700000,\"output\":100000,\"reasoning\":0,\"cache\":{\"read\":200000,\"write\":100000}},\"modelID\":\"claude-sonnet-4-5\",\"providerID\":\"flow\",\"time\":{\"created\":\(ts+100)}}');", nil, nil, nil)
+
+        let pricing = testPricing()
+        let summary = OpenCodeDBMonitor.parseUsage(dbURL: dbURL, pricing: pricing, dateFilter: nil)
+        let detail = try XCTUnwrap(SessionLogParser.parse(
+            claudeTranscriptDirs: [],
+            claudeFiles: [],
+            codexFiles: [],
+            opencodeDB: dbURL,
             pricing: pricing
         ).first)
 

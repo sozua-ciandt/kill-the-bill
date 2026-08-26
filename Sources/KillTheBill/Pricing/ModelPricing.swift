@@ -16,7 +16,12 @@ struct ModelPricing: Sendable {
     }
 
     static func load() -> ModelPricing {
-        ModelPricing(models: ModelsDevPricingCatalog.loadPricing())
+        var models = ModelsDevPricingCatalog.loadPricing()
+        let flowPricing = FlowPricingCatalog.loadPricing()
+        for (key, pricing) in flowPricing {
+            models[key] = pricing
+        }
+        return ModelPricing(models: models)
     }
 
     func cost(model rawModel: String, input: Int, output: Int, cacheWrite: Int, cacheRead: Int) -> Double? {
@@ -64,17 +69,27 @@ struct ModelPricing: Sendable {
     static func normalizeModel(_ raw: String) -> String {
         var normalized = normalizeQualifiedModel(raw)
 
-        for prefix in ["anthropic.", "openai."] where normalized.hasPrefix(prefix) {
-            normalized.removeFirst(prefix.count)
-        }
+        while true {
+            var changed = false
+            if normalized.hasPrefix("flow-"),
+               let slashIndex = normalized.firstIndex(of: "/") {
+                normalized.removeSubrange(normalized.startIndex...slashIndex)
+                changed = true
+            }
 
-        let knownProviderPrefixes = [
-            "anthropic/", "openai/", "google/", "xai/", "mistral/",
-            "cohere/", "deepseek/", "alibaba/",
-        ]
-        for prefix in knownProviderPrefixes where normalized.hasPrefix(prefix) {
-            normalized.removeFirst(prefix.count)
-            break
+            let knownProviderPrefixes = [
+                "flow/", "azure-foundry/", "azure-openai/", "google-gemini/",
+                "amazon-bedrock/", "azure-ai-speech/", "anthropic/", "openai/",
+                "google/", "xai/", "mistral/", "cohere/", "deepseek/", "alibaba/",
+                "openrouter/", "anthropic.", "openai."
+            ]
+            for prefix in knownProviderPrefixes where normalized.hasPrefix(prefix) {
+                normalized.removeFirst(prefix.count)
+                changed = true
+                break
+            }
+
+            if !changed { break }
         }
 
         return normalized
@@ -88,14 +103,29 @@ struct ModelPricing: Sendable {
         if let exact = models[providerQualified] {
             return exact
         }
-        return models[normalizeModel(rawModel)]
+        let normalized = normalizeModel(rawModel)
+        if let match = models[normalized] {
+            return match
+        }
+        if let match = models["anthropic.\(normalized)"] {
+            return match
+        }
+        if let match = models["openai.\(normalized)"] {
+            return match
+        }
+        return nil
     }
 
     private static func normalizeCommonModelSyntax(_ raw: String) -> String {
         raw
+            .replacing(#/\[\d+[a-zA-Z0-9_-]*\]/#, with: "")
+            .replacing(#/gpt-5-([0-9])/#, with: { "gpt-5.\($0.1)" })
+            .replacing(#/gpt-4-([0-9])/#, with: { "gpt-4.\($0.1)" })
+            .replacing(#/gpt-3-([0-9])/#, with: { "gpt-3.\($0.1)" })
             .replacingOccurrences(of: "gpt-5-5", with: "gpt-5.5")
             .replacingOccurrences(of: "gpt-5-4", with: "gpt-5.4")
             .replacing(#/-\d{8}$/#, with: "")
+            .replacing(#/-\d{4}$/#, with: "")
     }
 
     private static func computeCost(pricing: TokenPricing?, input: Int, output: Int, cacheWrite: Int, cacheRead: Int) -> Double? {

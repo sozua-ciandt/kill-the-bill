@@ -162,4 +162,169 @@ final class PricingTests: XCTestCase {
         assertDoubleEqual(pricing["codex-mini"]?.input ?? -1, 1)
         assertDoubleEqual(pricing["z-reseller/codex-mini"]?.input ?? -1, 0.1)
     }
+
+    func testFlowPricingCatalogDecodesWrappedResponse() {
+        let json = """
+        {
+          "status": "success",
+          "statusCode": 200,
+          "data": {
+            "enabledModels": [
+              {
+                "name": "DeepSeek-V4-Pro",
+                "vendor": "azure-foundry",
+                "inputCostPerMillionToken": 1.74,
+                "outputCostPerMillionToken": 3.48,
+                "cacheReadTokenCost": 0.000000174,
+                "cacheCreation5mTokenCost": 0.000000348
+              }
+            ],
+            "disabledModels": []
+          }
+        }
+        """
+
+        let pricing = FlowPricingCatalog.decodePricing(from: Data(json.utf8))
+
+        let direct = pricing["deepseek-v4-pro"]
+        XCTAssertNotNil(direct)
+        assertDoubleEqual(direct?.input ?? -1, 1.74)
+        assertDoubleEqual(direct?.output ?? -1, 3.48)
+        assertDoubleEqual(direct?.cacheRead ?? -1, 0.174)
+        assertDoubleEqual(direct?.cacheWrite ?? -1, 0.348)
+
+        XCTAssertNotNil(pricing["azure-foundry/deepseek-v4-pro"])
+        XCTAssertNotNil(pricing["flow-azure-foundry/deepseek-v4-pro"])
+        XCTAssertNotNil(pricing["flow-deepseek/deepseek-v4-pro"])
+        XCTAssertNotNil(pricing["flow/deepseek-v4-pro"])
+    }
+
+    func testFlowPricingCatalogDecodesPerTokenPricingFormulas() {
+        let json = """
+        {
+          "enabledModels": [
+            {
+              "name": "gemini-3.7-flash",
+              "vendor": "google",
+              "inputTokenCost": 0.00000075,
+              "outputTokenCost": 0.00000375,
+              "cacheReadTokenCost": 0.000000075,
+              "cacheCreation1hTokenCost": 0.00000015
+            }
+          ]
+        }
+        """
+
+        let pricing = FlowPricingCatalog.decodePricing(from: Data(json.utf8))
+
+        let flash = pricing["gemini-3.7-flash"]
+        XCTAssertNotNil(flash)
+        assertDoubleEqual(flash?.input ?? -1, 0.75)
+        assertDoubleEqual(flash?.output ?? -1, 3.75)
+        assertDoubleEqual(flash?.cacheRead ?? -1, 0.075)
+        assertDoubleEqual(flash?.cacheWrite ?? -1, 0.15)
+        XCTAssertNotNil(pricing["flow-gemini/gemini-3.7-flash"])
+    }
+
+    func testFlowPricingCatalogFallbackContainsReferenceModels() {
+        let fallback = FlowPricingCatalog.fallbackPricing()
+
+        let deepseek = fallback["deepseek-v4-pro"]
+        XCTAssertNotNil(deepseek)
+        assertDoubleEqual(deepseek?.input ?? -1, 1.74)
+        assertDoubleEqual(deepseek?.output ?? -1, 3.48)
+
+        let gemini = fallback["gemini-3.7-flash"]
+        XCTAssertNotNil(gemini)
+        assertDoubleEqual(gemini?.input ?? -1, 0.75)
+        assertDoubleEqual(gemini?.output ?? -1, 3.75)
+
+        let codex = fallback["gpt-5.1-codex"]
+        XCTAssertNotNil(codex)
+        assertDoubleEqual(codex?.input ?? -1, 1.25)
+        assertDoubleEqual(codex?.output ?? -1, 10.00)
+
+        XCTAssertNotNil(fallback["claude-sonnet-4-6"])
+        XCTAssertNotNil(fallback["gpt-5.6-sol"])
+        XCTAssertNotNil(fallback["gpt-5.6-luna"])
+        XCTAssertNotNil(fallback["flow-deepseek/deepseek-v4-pro"])
+        XCTAssertNotNil(fallback["flow-gemini/gemini-3.7-flash"])
+    }
+
+    func testUniversalNormalizationRemovesContextSuffixesAndGatewayPrefixes() {
+        // Context suffixes
+        XCTAssertEqual(ModelPricing.normalizeModel("DeepSeek-V4-Pro[1m]"), "deepseek-v4-pro")
+        XCTAssertEqual(ModelPricing.normalizeModel("claude-3-5-sonnet[200k]"), "claude-3-5-sonnet")
+        XCTAssertEqual(ModelPricing.normalizeModel("gpt-4o[128k]"), "gpt-4o")
+
+        // Gateway prefixes
+        XCTAssertEqual(ModelPricing.normalizeModel("flow-deepseek/DeepSeek-V4-Pro"), "deepseek-v4-pro")
+        XCTAssertEqual(ModelPricing.normalizeModel("flow-gemini/gemini-3.7-flash"), "gemini-3.7-flash")
+        XCTAssertEqual(ModelPricing.normalizeModel("flow/deepseek-v4-pro"), "deepseek-v4-pro")
+        XCTAssertEqual(ModelPricing.normalizeModel("azure-foundry/deepseek-v4-pro"), "deepseek-v4-pro")
+        XCTAssertEqual(ModelPricing.normalizeModel("azure-openai/gpt-5.6-luna"), "gpt-5.6-luna")
+        XCTAssertEqual(ModelPricing.normalizeModel("google-gemini/gemini-3.7-flash"), "gemini-3.7-flash")
+        XCTAssertEqual(ModelPricing.normalizeModel("amazon-bedrock/claude-3-5-sonnet"), "claude-3-5-sonnet")
+        XCTAssertEqual(ModelPricing.normalizeModel("azure-ai-speech/whisper"), "whisper")
+    }
+
+    func testHarnessModelsCostResolutionWithFlowFallback() throws {
+        let pricing = ModelPricing.load()
+
+        // Claude Code with context suffix
+        let claudeCost = try XCTUnwrap(pricing.cost(
+            model: "DeepSeek-V4-Pro[1m]",
+            input: 1_000_000,
+            output: 1_000_000,
+            cacheWrite: 0,
+            cacheRead: 0
+        ))
+        assertDoubleEqual(claudeCost, 1.74 + 3.48)
+
+        // OpenCode with flow-deepseek prefix
+        let openCodeDeepSeekCost = try XCTUnwrap(pricing.cost(
+            model: "flow-deepseek/DeepSeek-V4-Pro",
+            input: 1_000_000,
+            output: 1_000_000,
+            cacheWrite: 0,
+            cacheRead: 0
+        ))
+        assertDoubleEqual(openCodeDeepSeekCost, 1.74 + 3.48)
+
+        // OpenCode with flow-gemini prefix
+        let openCodeGeminiCost = try XCTUnwrap(pricing.cost(
+            model: "flow-gemini/gemini-3.7-flash",
+            input: 1_000_000,
+            output: 1_000_000,
+            cacheWrite: 0,
+            cacheRead: 0
+        ))
+        assertDoubleEqual(openCodeGeminiCost, 0.75 + 3.75)
+
+        // Codex model
+        let codexCost = try XCTUnwrap(pricing.cost(
+            model: "gpt-5.1-codex",
+            input: 1_000_000,
+            output: 1_000_000,
+            cacheWrite: 0,
+            cacheRead: 0
+        ))
+        assertDoubleEqual(codexCost, 1.25 + 10.00)
+    }
+
+    func testFlowCatalogTakesPrecedenceOverModelsDev() {
+        let pricing = ModelPricing.load()
+
+        // In models.dev fallback, gemini-3.7-flash was 0.35 / 0.70.
+        // In Flow catalog fallback, gemini-3.7-flash is corporate 0.75 / 3.75.
+        let cost = pricing.cost(
+            model: "gemini-3.7-flash",
+            input: 1_000_000,
+            output: 0,
+            cacheWrite: 0,
+            cacheRead: 0
+        )
+        XCTAssertNotNil(cost)
+        assertDoubleEqual(cost!, 0.75)
+    }
 }

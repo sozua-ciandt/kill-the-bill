@@ -5,6 +5,7 @@ enum SessionLogParser {
         claudeTranscriptDirs: [URL],
         claudeFiles: [URL],
         codexFiles: [URL],
+        opencodeDB: URL? = nil,
         pricing: ModelPricing,
         interval: DateInterval? = nil
     ) -> [UsageSession] {
@@ -19,9 +20,15 @@ enum SessionLogParser {
             pricing: pricing,
             interval: interval
         )
+        let opencodeFragments = OpenCodeDBMonitor.parseSessions(
+            dbURL: opencodeDB,
+            pricing: pricing,
+            interval: interval
+        )
 
         return (buildClaudeSessions(from: claudeFragments)
-            + buildSessions(from: codexFragments))
+            + buildSessions(from: codexFragments)
+            + buildSessions(from: opencodeFragments))
             .sorted {
                 switch ($0.lastActivityAt, $1.lastActivityAt) {
                 case let (left?, right?) where left != right: return left > right

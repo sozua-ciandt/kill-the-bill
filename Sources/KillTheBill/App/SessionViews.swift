@@ -498,13 +498,25 @@ private struct SessionRow: View {
         switch session.harness {
         case .claudeCode: l10n.text("harness.claude")
         case .codex: l10n.text("harness.codex")
+        case .opencode: l10n.text("harness.opencode")
         }
     }
 
     private var harnessIcon: some View {
-        Image(systemName: session.harness == .claudeCode ? "sparkles" : "terminal.fill")
+        let (icon, color): (String, Color) = {
+            switch session.harness {
+            case .claudeCode:
+                return ("sparkles", Color.orange)
+            case .codex:
+                return ("terminal.fill", Color.accentColor)
+            case .opencode:
+                return ("chevron.left.forwardslash.chevron.right", Color.blue)
+            }
+        }()
+
+        return Image(systemName: icon)
             .font(.caption.weight(.semibold))
-            .foregroundStyle(session.harness == .claudeCode ? Color.orange : Color.accentColor)
+            .foregroundStyle(color)
             .frame(width: 26, height: 26)
             .background(Color.secondary.opacity(0.1))
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
@@ -569,15 +581,21 @@ struct SessionDetailView: View {
             Text(l10n.text("sessions.detail.title"))
                 .font(.headline)
             Spacer()
-            Text(session.harness == .claudeCode
-                 ? l10n.text("harness.claude")
-                 : l10n.text("harness.codex"))
+            Text(harnessDisplayName(for: session.harness))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
                 .background(Color.secondary.opacity(0.1))
                 .clipShape(Capsule())
+        }
+    }
+
+    private func harnessDisplayName(for harness: SessionHarness) -> String {
+        switch harness {
+        case .claudeCode: l10n.text("harness.claude")
+        case .codex: l10n.text("harness.codex")
+        case .opencode: l10n.text("harness.opencode")
         }
     }
 

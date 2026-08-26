@@ -84,6 +84,54 @@ struct MenuBarView: View {
     }
 }
 
+enum OverviewPresentation {
+    static func sortedModels(
+        _ models: [ModelUsage],
+        ranking: OverviewRankingPeriod,
+        showEvents: Bool
+    ) -> [ModelUsage] {
+        models.sorted { a, b in
+            if showEvents {
+                if a.turnCount != b.turnCount { return a.turnCount > b.turnCount }
+                return a.id < b.id
+            }
+            switch ranking {
+            case .monthly:
+                if a.monthlyCostUSD != b.monthlyCostUSD { return a.monthlyCostUSD > b.monthlyCostUSD }
+                if a.costUSD != b.costUSD { return a.costUSD > b.costUSD }
+                return a.id < b.id
+            case .daily:
+                if a.costUSD != b.costUSD { return a.costUSD > b.costUSD }
+                if a.monthlyCostUSD != b.monthlyCostUSD { return a.monthlyCostUSD > b.monthlyCostUSD }
+                return a.id < b.id
+            }
+        }
+    }
+
+    static func sortedWorkspaces(
+        _ workspaces: [WorkspaceUsage],
+        ranking: OverviewRankingPeriod,
+        showEvents: Bool
+    ) -> [WorkspaceUsage] {
+        workspaces.sorted { a, b in
+            if showEvents {
+                if a.turnCount != b.turnCount { return a.turnCount > b.turnCount }
+                return a.id < b.id
+            }
+            switch ranking {
+            case .monthly:
+                if a.monthlyCostUSD != b.monthlyCostUSD { return a.monthlyCostUSD > b.monthlyCostUSD }
+                if a.costUSD != b.costUSD { return a.costUSD > b.costUSD }
+                return a.id < b.id
+            case .daily:
+                if a.costUSD != b.costUSD { return a.costUSD > b.costUSD }
+                if a.monthlyCostUSD != b.monthlyCostUSD { return a.monthlyCostUSD > b.monthlyCostUSD }
+                return a.id < b.id
+            }
+        }
+    }
+}
+
 private struct OverviewView: View {
     let store: UsageStore
     @Bindable var settings: AppSettings
@@ -374,16 +422,32 @@ private struct OverviewView: View {
 
     // MARK: Breakdown
 
+    private var sortedModels: [ModelUsage] {
+        OverviewPresentation.sortedModels(
+            store.usage.perModel,
+            ranking: settings.overviewRanking,
+            showEvents: settings.showEvents
+        )
+    }
+
+    private var sortedWorkspaces: [WorkspaceUsage] {
+        OverviewPresentation.sortedWorkspaces(
+            store.usage.perWorkspace,
+            ranking: settings.overviewRanking,
+            showEvents: settings.showEvents
+        )
+    }
+
     private var modelSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(l10n.text("overview.models"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            if store.usage.perModel.isEmpty {
+            if sortedModels.isEmpty {
                 emptyRow(l10n.text("overview.no_data"))
             } else {
-                ForEach(Array(store.usage.perModel.prefix(5))) { model in
+                ForEach(Array(sortedModels.prefix(5))) { model in
                     HStack {
                         Text(model.id)
                             .font(.system(.caption, design: .monospaced))
@@ -406,10 +470,10 @@ private struct OverviewView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            if store.usage.perWorkspace.isEmpty {
+            if sortedWorkspaces.isEmpty {
                 emptyRow(l10n.text("overview.no_sessions"))
             } else {
-                ForEach(Array(store.usage.perWorkspace.prefix(5))) { workspace in
+                ForEach(Array(sortedWorkspaces.prefix(5))) { workspace in
                     HStack {
                         Image(systemName: "folder.fill")
                             .font(.caption2)

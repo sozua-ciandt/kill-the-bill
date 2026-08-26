@@ -132,22 +132,36 @@ struct UsageAccumulator {
     private(set) var sessionFiles: Set<String> = []
 
     mutating func registerSession(
+        id: String,
+        workspaceID: String,
+        displayName: String,
+        lastActivity: Date? = nil
+    ) {
+        ensureWorkspace(id: workspaceID, displayName: displayName)
+        if sessionFiles.insert(id).inserted {
+            workspaces[workspaceID]?.sessionCount += 1
+        }
+        if let lastActivity, lastActivity > lastDate {
+            lastDate = lastActivity
+        }
+    }
+
+    mutating func registerSession(
         _ file: URL,
         logicalSessionID: String? = nil,
         workspaceID: String,
         displayName: String
     ) {
-        ensureWorkspace(id: workspaceID, displayName: displayName)
         let sessionID = logicalSessionID ?? file.standardizedFileURL.path
-        if sessionFiles.insert(sessionID).inserted {
-            workspaces[workspaceID]?.sessionCount += 1
-        }
-
-        if let modDate = try? file.resourceValues(
+        let modDate = try? file.resourceValues(
             forKeys: [.contentModificationDateKey]
-        ).contentModificationDate, modDate > lastDate {
-            lastDate = modDate
-        }
+        ).contentModificationDate
+        registerSession(
+            id: sessionID,
+            workspaceID: workspaceID,
+            displayName: displayName,
+            lastActivity: modDate
+        )
     }
 
     mutating func addTurn(

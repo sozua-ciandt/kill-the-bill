@@ -175,7 +175,7 @@ final class SessionPresentationTests: XCTestCase {
         toolCallCount: Int,
         children: [SessionSubagentUsage] = []
     ) -> SessionSubagentUsage {
-        SessionSubagentUsage(
+        return SessionSubagentUsage(
             id: id,
             name: nil,
             kind: nil,
@@ -192,5 +192,49 @@ final class SessionPresentationTests: XCTestCase {
             children: children,
             dataCompleteness: .complete
         )
+    }
+
+    func testOverviewRankingSortsByMonthlyOrDailyPreference() {
+        let ws1 = WorkspaceUsage(
+            id: "proj-heavy-monthly",
+            displayName: "proj-heavy-monthly",
+            costUSD: 5.0,
+            monthlyCostUSD: 100.0,
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheWriteTokens: 0,
+            cacheReadTokens: 0,
+            sessionCount: 1,
+            turnCount: 10,
+            unpricedTurnCount: 0
+        )
+        let ws2 = WorkspaceUsage(
+            id: "proj-heavy-daily",
+            displayName: "proj-heavy-daily",
+            costUSD: 50.0,
+            monthlyCostUSD: 60.0,
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheWriteTokens: 0,
+            cacheReadTokens: 0,
+            sessionCount: 1,
+            turnCount: 20,
+            unpricedTurnCount: 0
+        )
+
+        let sortedMonthly = OverviewPresentation.sortedWorkspaces([ws1, ws2], ranking: .monthly, showEvents: false)
+        XCTAssertEqual(sortedMonthly.map(\.id), ["proj-heavy-monthly", "proj-heavy-daily"])
+
+        let sortedDaily = OverviewPresentation.sortedWorkspaces([ws1, ws2], ranking: .daily, showEvents: false)
+        XCTAssertEqual(sortedDaily.map(\.id), ["proj-heavy-daily", "proj-heavy-monthly"])
+
+        let m1 = ModelUsage(id: "model-m", costUSD: 1.0, monthlyCostUSD: 50.0, turnCount: 5, unpricedTurnCount: 0)
+        let m2 = ModelUsage(id: "model-d", costUSD: 10.0, monthlyCostUSD: 20.0, turnCount: 15, unpricedTurnCount: 0)
+
+        let modelsMonthly = OverviewPresentation.sortedModels([m1, m2], ranking: .monthly, showEvents: false)
+        XCTAssertEqual(modelsMonthly.map(\.id), ["model-m", "model-d"])
+
+        let modelsDaily = OverviewPresentation.sortedModels([m1, m2], ranking: .daily, showEvents: false)
+        XCTAssertEqual(modelsDaily.map(\.id), ["model-d", "model-m"])
     }
 }

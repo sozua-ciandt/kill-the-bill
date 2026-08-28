@@ -41,6 +41,102 @@ enum LogScanner {
         )
     }
 
+    struct TranscriptScanResult: Sendable {
+        let today: [URL]
+        let thisMonth: [URL]
+        let all: [URL]
+    }
+
+    static func scanClaudeTranscripts(from dirs: [URL]) -> TranscriptScanResult {
+        let now = Date()
+        let calendar = Calendar.current
+        let month = calendar.component(.month, from: now)
+        let year = calendar.component(.year, from: now)
+        let prevMonth = month == 1 ? 12 : month - 1
+        let prevYear  = month == 1 ? year - 1 : year
+
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .contentModificationDateKey]
+        var todayFiles: [URL] = []
+        var monthFiles: [URL] = []
+        var allFiles: [URL] = []
+
+        for dir in dirs {
+            guard let enumerator = FileManager.default.enumerator(
+                at: dir,
+                includingPropertiesForKeys: Array(keys),
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+
+            for case let entry as URL in enumerator where entry.pathExtension == "jsonl" {
+                guard let values = try? entry.resourceValues(forKeys: keys),
+                      values.isRegularFile == true,
+                      let modDate = values.contentModificationDate else {
+                    continue
+                }
+                allFiles.append(entry)
+                if calendar.isDateInToday(modDate) {
+                    todayFiles.append(entry)
+                }
+                let m = calendar.component(.month, from: modDate)
+                let y = calendar.component(.year, from: modDate)
+                if (m == month && y == year) || (m == prevMonth && y == prevYear) {
+                    monthFiles.append(entry)
+                }
+            }
+        }
+
+        return TranscriptScanResult(
+            today: todayFiles.sorted { $0.standardizedFileURL.path < $1.standardizedFileURL.path },
+            thisMonth: monthFiles.sorted { $0.standardizedFileURL.path < $1.standardizedFileURL.path },
+            all: allFiles.sorted { $0.standardizedFileURL.path < $1.standardizedFileURL.path }
+        )
+    }
+
+    static func scanCodexSessions(from root: URL?) -> TranscriptScanResult {
+        guard let root else {
+            return TranscriptScanResult(today: [], thisMonth: [], all: [])
+        }
+        let now = Date()
+        let calendar = Calendar.current
+        let month = calendar.component(.month, from: now)
+        let year = calendar.component(.year, from: now)
+
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .contentModificationDateKey]
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsHiddenFiles]
+        ) else {
+            return TranscriptScanResult(today: [], thisMonth: [], all: [])
+        }
+
+        var todayFiles: [URL] = []
+        var monthFiles: [URL] = []
+        var allFiles: [URL] = []
+
+        for case let entry as URL in enumerator where entry.pathExtension == "jsonl" {
+            guard let values = try? entry.resourceValues(forKeys: keys),
+                  values.isRegularFile == true,
+                  let modDate = values.contentModificationDate else {
+                continue
+            }
+            allFiles.append(entry)
+            if calendar.isDateInToday(modDate) {
+                todayFiles.append(entry)
+            }
+            if calendar.component(.month, from: modDate) == month &&
+               calendar.component(.year, from: modDate) == year {
+                monthFiles.append(entry)
+            }
+        }
+
+        return TranscriptScanResult(
+            today: todayFiles.sorted { $0.standardizedFileURL.path < $1.standardizedFileURL.path },
+            thisMonth: monthFiles.sorted { $0.standardizedFileURL.path < $1.standardizedFileURL.path },
+            all: allFiles.sorted { $0.standardizedFileURL.path < $1.standardizedFileURL.path }
+        )
+    }
+
     /// Find today's transcript files across all project dirs.
     static func findTodayClaudeTranscripts(from dirs: [URL]) -> [URL] {
         findClaudeTranscripts(from: dirs) { calendar, date in calendar.isDateInToday(date) }
@@ -49,6 +145,12 @@ enum LogScanner {
     /// Find every Claude transcript recursively, regardless of modification date.
     static func findAllClaudeTranscripts(from dirs: [URL]) -> [URL] {
         findClaudeTranscripts(from: dirs) { _, _ in true }
+    }
+
+    /// Find Claude transcripts within an interval. If interval is nil, returns all transcripts.
+    static func findClaudeTranscripts(from dirs: [URL], interval: DateInterval?) -> [URL] {
+        guard let interval else { return findAllClaudeTranscripts(from: dirs) }
+        return findClaudeTranscripts(from: dirs) { _, modDate in modDate >= interval.start }
     }
 
     /// Find this month's transcript files across all project dirs.
@@ -78,6 +180,12 @@ enum LogScanner {
     /// Find every Codex session recursively, regardless of modification date.
     static func findAllCodexSessions(from root: URL?) -> [URL] {
         findCodexSessions(from: root) { _, _ in true }
+    }
+
+    /// Find Codex sessions within an interval. If interval is nil, returns all sessions.
+    static func findCodexSessions(from root: URL?, interval: DateInterval?) -> [URL] {
+        guard let interval else { return findAllCodexSessions(from: root) }
+        return findCodexSessions(from: root) { _, modDate in modDate >= interval.start }
     }
 
     static func findThisMonthCodexSessions(from root: URL?) -> [URL] {

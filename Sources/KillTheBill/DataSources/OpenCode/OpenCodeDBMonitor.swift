@@ -44,27 +44,38 @@ enum OpenCodeDBMonitor {
         let calendar = Calendar.current
         var sessionsWithUsage: Set<String> = []
 
+        var messageQuery = "SELECT id, session_id, time_created, data FROM message ORDER BY time_created ASC;"
+        var filterRange: (startMS: Int64, endMS: Int64)? = nil
+        if let dateFilter, let range = dateRangeMS(for: dateFilter, calendar: calendar) {
+            filterRange = range
+            messageQuery = "SELECT id, session_id, time_created, data FROM message WHERE time_created >= ? AND time_created < ? ORDER BY time_created ASC;"
+        }
+
         // 1. Process messages
-        let messageQuery = "SELECT id, session_id, time_created, data FROM message ORDER BY time_created ASC;"
         var stmt: OpaquePointer?
         if sqlite3_prepare_v2(db, messageQuery, -1, &stmt, nil) == SQLITE_OK {
             defer { sqlite3_finalize(stmt) }
+            if let filterRange {
+                sqlite3_bind_int64(stmt, 1, filterRange.startMS)
+                sqlite3_bind_int64(stmt, 2, filterRange.endMS)
+            }
 
             while sqlite3_step(stmt) == SQLITE_ROW {
                 guard let sessionID = sqliteString(stmt, 1),
                       let session = sessions[sessionID],
-                      let dataStr = sqliteString(stmt, 3),
-                      let dataBytes = dataStr.data(using: .utf8),
+                      let dataBytes = sqliteData(stmt, 3),
                       let json = try? JSONSerialization.jsonObject(with: dataBytes) as? [String: Any],
                       let role = json["role"] as? String,
                       role == "assistant" else {
                     continue
                 }
 
-                let date = sqliteDate(stmt, 2)
-                if let filter = dateFilter, let date {
-                    guard ParserHelpers.matchesFilter(date, filter: filter, calendar: calendar) else {
-                        continue
+                if filterRange == nil, let filter = dateFilter {
+                    let date = sqliteDate(stmt, 2)
+                    if let date {
+                        guard ParserHelpers.matchesFilter(date, filter: filter, calendar: calendar) else {
+                            continue
+                        }
                     }
                 }
 
@@ -171,6 +182,236 @@ enum OpenCodeDBMonitor {
         return accumulator.dailyUsage()
     }
 
+    static func parseUsageOverview(
+        dbURL: URL?,
+        pricing: ModelPricing,
+        todayFilter: DateComponents,
+        monthFilter: DateComponents
+    ) -> (today: DailyUsage, month: DailyUsage) {
+        guard let dbURL, let db = openDatabase(at: dbURL) else {
+            return (DailyUsage(), DailyUsage())
+        }
+        defer { sqlite3_close(db) }
+
+        let projects = loadProjects(db: db)
+        let sessions = loadSessions(db: db)
+        var todayAccumulator = UsageAccumulator()
+        var monthAccumulator = UsageAccumulator()
+        let calendar = Calendar.current
+        var todaySessions: Set<String> = []
+        var monthSessions: Set<String> = []
+
+        let monthRange = dateRangeMS(for: monthFilter, calendar: calendar)
+        let todayRange = dateRangeMS(for: todayFilter, calendar: calendar)
+
+        var messageQuery = "SELECT id, session_id, time_created, data FROM message ORDER BY time_created ASC;"
+        if monthRange != nil {
+            messageQuery = "SELECT id, session_id, time_created, data FROM message WHERE time_created >= ? AND time_created < ? ORDER BY time_created ASC;"
+        }
+
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, messageQuery, -1, &stmt, nil) == SQLITE_OK {
+            defer { sqlite3_finalize(stmt) }
+            if let monthRange {
+                sqlite3_bind_int64(stmt, 1, monthRange.startMS)
+                sqlite3_bind_int64(stmt, 2, monthRange.endMS)
+            }
+
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                guard let sessionID = sqliteString(stmt, 1),
+                      let session = sessions[sessionID],
+                      let dataBytes = sqliteData(stmt, 3),
+                      let json = try? JSONSerialization.jsonObject(with: dataBytes) as? [String: Any],
+                      let role = json["role"] as? String,
+                      role == "assistant" else {
+                    continue
+                }
+
+                let timeCreatedMS = sqlite3_column_int64(stmt, 2)
+                let date = timeCreatedMS > 0 ? Date(timeIntervalSince1970: TimeInterval(timeCreatedMS) / 1000) : nil
+
+                let matchesMonth: Bool
+                if monthRange != nil {
+                    matchesMonth = true
+                } else if let date {
+                    matchesMonth = ParserHelpers.matchesFilter(date, filter: monthFilter, calendar: calendar)
+                } else {
+                    matchesMonth = false
+                }
+
+                guard matchesMonth else { continue }
+
+                let matchesToday: Bool
+                if let todayRange {
+                    matchesToday = timeCreatedMS >= todayRange.startMS && timeCreatedMS < todayRange.endMS
+                } else if let date {
+                    matchesToday = ParserHelpers.matchesFilter(date, filter: todayFilter, calendar: calendar)
+                } else {
+                    matchesToday = false
+                }
+
+                let (tokens, modelID, providerID) = parseAssistantUsage(json: json, fallbackModelJSON: session.modelJSON)
+                guard tokens.knownTotalTokens > 0 || (tokens.inputTokens + tokens.outputTokens) > 0 else {
+                    continue
+                }
+
+                let (modelKey, cost) = resolvePricingAndModelKey(
+                    modelID: modelID,
+                    providerID: providerID,
+                    pricing: pricing,
+                    tokens: tokens
+                )
+
+                let project = projects[session.projectID]
+                let (workspaceID, displayName) = openCodeWorkspaceName(
+                    projectName: project?.name,
+                    worktree: project?.worktree,
+                    directory: session.directory
+                )
+
+                monthAccumulator.addTurn(
+                    workspaceID: workspaceID,
+                    displayName: displayName,
+                    modelID: modelKey,
+                    input: tokens.inputTokens,
+                    output: tokens.outputTokens,
+                    cacheWrite: tokens.cacheWriteTokens,
+                    cacheRead: tokens.cacheReadTokens,
+                    costUSD: cost
+                )
+                monthSessions.insert(sessionID)
+
+                if matchesToday {
+                    todayAccumulator.addTurn(
+                        workspaceID: workspaceID,
+                        displayName: displayName,
+                        modelID: modelKey,
+                        input: tokens.inputTokens,
+                        output: tokens.outputTokens,
+                        cacheWrite: tokens.cacheWriteTokens,
+                        cacheRead: tokens.cacheReadTokens,
+                        costUSD: cost
+                    )
+                    todaySessions.insert(sessionID)
+                }
+            }
+        }
+
+        // 2. Fallback for sessions
+        for session in sessions.values {
+            guard session.tokensInput > 0 || session.tokensOutput > 0 else { continue }
+
+            let sessionUpdatedMS = session.timeUpdated.map { Int64($0.timeIntervalSince1970 * 1000) } ??
+                                   session.timeCreated.map { Int64($0.timeIntervalSince1970 * 1000) } ?? 0
+
+            let inMonth: Bool
+            if let monthRange {
+                inMonth = sessionUpdatedMS >= monthRange.startMS && sessionUpdatedMS < monthRange.endMS
+            } else if let updated = session.timeUpdated ?? session.timeCreated {
+                inMonth = ParserHelpers.matchesFilter(updated, filter: monthFilter, calendar: calendar)
+            } else {
+                inMonth = false
+            }
+
+            let inToday: Bool
+            if let todayRange {
+                inToday = sessionUpdatedMS >= todayRange.startMS && sessionUpdatedMS < todayRange.endMS
+            } else if let updated = session.timeUpdated ?? session.timeCreated {
+                inToday = ParserHelpers.matchesFilter(updated, filter: todayFilter, calendar: calendar)
+            } else {
+                inToday = false
+            }
+
+            guard inMonth || inToday else { continue }
+
+            let (modelID, providerID) = parseModelInfo(from: session.modelJSON)
+            let tokens = SessionTokenUsage(
+                inputTokens: session.tokensInput,
+                outputTokens: session.tokensOutput,
+                cacheWriteTokens: session.tokensCacheWrite,
+                cacheReadTokens: session.tokensCacheRead,
+                reasoningOutputTokens: session.tokensReasoning
+            )
+            let (modelKey, cost) = resolvePricingAndModelKey(
+                modelID: modelID,
+                providerID: providerID,
+                pricing: pricing,
+                tokens: tokens
+            )
+            let project = projects[session.projectID]
+            let (workspaceID, displayName) = openCodeWorkspaceName(
+                projectName: project?.name,
+                worktree: project?.worktree,
+                directory: session.directory
+            )
+
+            if inMonth, !monthSessions.contains(session.id) {
+                monthAccumulator.addTurn(
+                    workspaceID: workspaceID,
+                    displayName: displayName,
+                    modelID: modelKey,
+                    input: tokens.inputTokens,
+                    output: tokens.outputTokens,
+                    cacheWrite: tokens.cacheWriteTokens,
+                    cacheRead: tokens.cacheReadTokens,
+                    costUSD: cost
+                )
+                monthSessions.insert(session.id)
+            }
+
+            if inToday, !todaySessions.contains(session.id) {
+                todayAccumulator.addTurn(
+                    workspaceID: workspaceID,
+                    displayName: displayName,
+                    modelID: modelKey,
+                    input: tokens.inputTokens,
+                    output: tokens.outputTokens,
+                    cacheWrite: tokens.cacheWriteTokens,
+                    cacheRead: tokens.cacheReadTokens,
+                    costUSD: cost
+                )
+                todaySessions.insert(session.id)
+            }
+        }
+
+        // 3. Register sessions
+        for sessionID in monthSessions {
+            guard let session = sessions[sessionID] else { continue }
+            let project = projects[session.projectID]
+            let (workspaceID, displayName) = openCodeWorkspaceName(
+                projectName: project?.name,
+                worktree: project?.worktree,
+                directory: session.directory
+            )
+            let rootID = (session.parentID?.isEmpty == false) ? session.parentID! : session.id
+            monthAccumulator.registerSession(
+                id: "opencode:\(rootID)",
+                workspaceID: workspaceID,
+                displayName: displayName,
+                lastActivity: session.timeUpdated ?? session.timeCreated
+            )
+        }
+
+        for sessionID in todaySessions {
+            guard let session = sessions[sessionID] else { continue }
+            let project = projects[session.projectID]
+            let (workspaceID, displayName) = openCodeWorkspaceName(
+                projectName: project?.name,
+                worktree: project?.worktree,
+                directory: session.directory
+            )
+            let rootID = (session.parentID?.isEmpty == false) ? session.parentID! : session.id
+            todayAccumulator.registerSession(
+                id: "opencode:\(rootID)",
+                workspaceID: workspaceID,
+                displayName: displayName,
+                lastActivity: session.timeUpdated ?? session.timeCreated
+            )
+        }
+
+        return (todayAccumulator.dailyUsage(), monthAccumulator.dailyUsage())
+    }
+
     // MARK: - Sessions List & Detail
 
     static func parseSessions(
@@ -220,17 +461,30 @@ enum OpenCodeDBMonitor {
             fragments[session.id] = fragment
         }
 
+        var messageQuery = "SELECT id, session_id, time_created, data FROM message ORDER BY time_created ASC;"
+        var partQuery = "SELECT id, message_id, session_id, time_created, data FROM part ORDER BY time_created ASC;"
+        var intervalRange: (startMS: Int64, endMS: Int64)? = nil
+        if let interval {
+            let startMS = Int64(interval.start.timeIntervalSince1970 * 1000)
+            let endMS = Int64(interval.end.timeIntervalSince1970 * 1000)
+            intervalRange = (startMS, endMS)
+            messageQuery = "SELECT id, session_id, time_created, data FROM message WHERE time_created >= ? AND time_created < ? ORDER BY time_created ASC;"
+            partQuery = "SELECT id, message_id, session_id, time_created, data FROM part WHERE time_created >= ? AND time_created < ? ORDER BY time_created ASC;"
+        }
+
         // Parse messages
-        let messageQuery = "SELECT id, session_id, time_created, data FROM message ORDER BY time_created ASC;"
         var stmtMsg: OpaquePointer?
         if sqlite3_prepare_v2(db, messageQuery, -1, &stmtMsg, nil) == SQLITE_OK {
             defer { sqlite3_finalize(stmtMsg) }
+            if let intervalRange {
+                sqlite3_bind_int64(stmtMsg, 1, intervalRange.startMS)
+                sqlite3_bind_int64(stmtMsg, 2, intervalRange.endMS)
+            }
 
             while sqlite3_step(stmtMsg) == SQLITE_ROW {
                 guard let sessionID = sqliteString(stmtMsg, 1),
                       var fragment = fragments[sessionID],
-                      let dataStr = sqliteString(stmtMsg, 3),
-                      let dataBytes = dataStr.data(using: .utf8),
+                      let dataBytes = sqliteData(stmtMsg, 3),
                       let json = try? JSONSerialization.jsonObject(with: dataBytes) as? [String: Any],
                       let role = json["role"] as? String else {
                     continue
@@ -268,16 +522,18 @@ enum OpenCodeDBMonitor {
         }
 
         // Parse parts (for previews and tools)
-        let partQuery = "SELECT id, message_id, session_id, time_created, data FROM part ORDER BY time_created ASC;"
         var stmtPart: OpaquePointer?
         if sqlite3_prepare_v2(db, partQuery, -1, &stmtPart, nil) == SQLITE_OK {
             defer { sqlite3_finalize(stmtPart) }
+            if let intervalRange {
+                sqlite3_bind_int64(stmtPart, 1, intervalRange.startMS)
+                sqlite3_bind_int64(stmtPart, 2, intervalRange.endMS)
+            }
 
             while sqlite3_step(stmtPart) == SQLITE_ROW {
                 guard let sessionID = sqliteString(stmtPart, 2),
                       var fragment = fragments[sessionID],
-                      let dataStr = sqliteString(stmtPart, 4),
-                      let dataBytes = dataStr.data(using: .utf8),
+                      let dataBytes = sqliteData(stmtPart, 4),
                       let json = try? JSONSerialization.jsonObject(with: dataBytes) as? [String: Any],
                       let type = json["type"] as? String else {
                     continue
@@ -391,6 +647,22 @@ enum OpenCodeDBMonitor {
         let ms = sqlite3_column_int64(stmt, col)
         guard ms > 0 else { return nil }
         return Date(timeIntervalSince1970: TimeInterval(ms) / 1000)
+    }
+
+    private static func sqliteData(_ stmt: OpaquePointer?, _ col: Int32) -> Data? {
+        guard let blob = sqlite3_column_blob(stmt, col) else { return nil }
+        let count = Int(sqlite3_column_bytes(stmt, col))
+        guard count > 0 else { return nil }
+        return Data(bytes: blob, count: count)
+    }
+
+    private static func dateRangeMS(for filter: DateComponents, calendar: Calendar) -> (startMS: Int64, endMS: Int64)? {
+        guard let date = calendar.date(from: filter) else { return nil }
+        let component: Calendar.Component = filter.day != nil ? .day : .month
+        guard let interval = calendar.dateInterval(of: component, for: date) else { return nil }
+        let startMS = Int64(interval.start.timeIntervalSince1970 * 1000)
+        let endMS = Int64(interval.end.timeIntervalSince1970 * 1000)
+        return (startMS, endMS)
     }
 
     private static func loadProjects(db: OpaquePointer) -> [String: ProjectRecord] {

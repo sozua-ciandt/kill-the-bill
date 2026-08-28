@@ -316,4 +316,76 @@ final class OpenCodeDBMonitorTests: XCTestCase {
         XCTAssertTrue(usage.perWorkspace.isEmpty)
         assertDoubleEqual(usage.totalCostUSD, 0)
     }
+
+    func testParseUsageOverviewAggregatesTodayAndMonthSinglePass() throws {
+        let temp = try TempDirectory()
+        let dbPath = temp.url.appendingPathComponent("opencode.db").path
+        let dbURL = try createTestDB(at: dbPath)
+
+        var db: OpaquePointer?
+        guard sqlite3_open(dbPath, &db) == SQLITE_OK else { return }
+        defer { sqlite3_close(db) }
+
+        let projectID = "proj-uuid-1"
+        let sessionID = "ses-1"
+        let timestampTodayMs: Int64 = 1786708800000 // 2026-08-14 12:00:00 UTC
+        let timestampPastDayInMonthMs: Int64 = 1785672000000 // 2026-08-02 12:00:00 UTC
+
+        sqlite3_exec(db, "INSERT INTO project (id, worktree, sandboxes, time_created, time_updated) VALUES ('\(projectID)', '/Users/diogor/Projetos/my-app', '[]', \(timestampTodayMs), \(timestampTodayMs));", nil, nil, nil)
+
+        // Session 1 (Today)
+        sqlite3_exec(db, """
+        INSERT INTO session (
+            id, project_id, slug, directory, title, version, cost,
+            tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write,
+            agent, model, time_created, time_updated
+        ) VALUES (
+            '\(sessionID)', '\(projectID)', 'slug', '/Users/diogor/Projetos/my-app', 'Fix login issue', '1.0', 0.0,
+            1000000, 100000, 0, 0, 0,
+            'build', '{"id":"gpt-5.5"}', \(timestampTodayMs), \(timestampTodayMs)
+        );
+        """, nil, nil, nil)
+
+        sqlite3_exec(db, "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES ('msg-u1', '\(sessionID)', \(timestampTodayMs), \(timestampTodayMs), '{\"role\":\"user\"}');", nil, nil, nil)
+        sqlite3_exec(db, "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES ('msg-a1', '\(sessionID)', \(timestampTodayMs), \(timestampTodayMs), '{\"role\":\"assistant\",\"tokens\":{\"input\":1000000,\"output\":100000,\"reasoning\":0,\"cache\":{\"read\":0,\"write\":0}},\"modelID\":\"gpt-5.5\"}');", nil, nil, nil)
+
+        // Session 2 (Earlier this month)
+        let sessionID2 = "ses-2"
+        sqlite3_exec(db, """
+        INSERT INTO session (
+            id, project_id, slug, directory, title, version, cost,
+            tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write,
+            agent, model, time_created, time_updated
+        ) VALUES (
+            '\(sessionID2)', '\(projectID)', 'slug', '/Users/diogor/Projetos/my-app', 'Past task', '1.0', 0.0,
+            2000000, 200000, 0, 0, 0,
+            'build', '{"id":"gpt-5.5"}', \(timestampPastDayInMonthMs), \(timestampPastDayInMonthMs)
+        );
+        """, nil, nil, nil)
+
+        sqlite3_exec(db, "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES ('msg-u2', '\(sessionID2)', \(timestampPastDayInMonthMs), \(timestampPastDayInMonthMs), '{\"role\":\"user\"}');", nil, nil, nil)
+        sqlite3_exec(db, "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES ('msg-a2', '\(sessionID2)', \(timestampPastDayInMonthMs), \(timestampPastDayInMonthMs), '{\"role\":\"assistant\",\"tokens\":{\"input\":2000000,\"output\":200000,\"reasoning\":0,\"cache\":{\"read\":0,\"write\":0}},\"modelID\":\"gpt-5.5\"}');", nil, nil, nil)
+
+        let todayComp = DateComponents(year: 2026, month: 8, day: 14)
+        let monthComp = DateComponents(year: 2026, month: 8)
+
+        let (todayUsage, monthUsage) = OpenCodeDBMonitor.parseUsageOverview(
+            dbURL: dbURL,
+            pricing: testPricing(),
+            todayFilter: todayComp,
+            monthFilter: monthComp
+        )
+
+        // Today usage only has session 1
+        XCTAssertEqual(todayUsage.sessionCount, 1)
+        XCTAssertEqual(todayUsage.turnCount, 1)
+        XCTAssertEqual(todayUsage.inputTokens, 1_000_000)
+        XCTAssertEqual(todayUsage.outputTokens, 100_000)
+
+        // Month usage has both session 1 and session 2
+        XCTAssertEqual(monthUsage.sessionCount, 2)
+        XCTAssertEqual(monthUsage.turnCount, 2)
+        XCTAssertEqual(monthUsage.inputTokens, 3_000_000)
+        XCTAssertEqual(monthUsage.outputTokens, 300_000)
+    }
 }

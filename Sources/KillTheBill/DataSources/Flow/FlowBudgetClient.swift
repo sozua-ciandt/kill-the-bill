@@ -24,14 +24,14 @@ struct FlowBudgetUsage: Sendable, Equatable {
         limitType.uppercased() == "NO_LIMIT"
     }
 
-    func resolved(for policy: FlowLimitPolicy) -> ResolvedFlowBudgetUsage {
-        let selected = resolvedLimit(for: policy)
+    func resolved(for policy: FlowLimitPolicy, customLimit: Double? = nil) -> ResolvedFlowBudgetUsage {
+        let selected = resolvedLimit(for: policy, customLimit: customLimit)
         let explicitlyUnlimited = limitType.uppercased() == "NO_LIMIT"
         let isUnavailable = selected == nil && !explicitlyUnlimited
         let percentage: Double
 
         if let selected {
-            percentage = consumedUSD / selected.value * 100
+            percentage = selected.value > 0 ? (consumedUSD / selected.value * 100) : 0
         } else if explicitlyUnlimited || policy == .automatic {
             percentage = reportedPercentage ?? 0
         } else {
@@ -51,7 +51,10 @@ struct FlowBudgetUsage: Sendable, Equatable {
         )
     }
 
-    private func resolvedLimit(for policy: FlowLimitPolicy) -> (value: Double, source: FlowLimitPolicy)? {
+    private func resolvedLimit(
+        for policy: FlowLimitPolicy,
+        customLimit: Double? = nil
+    ) -> (value: Double, source: FlowLimitPolicy)? {
         guard limitType.uppercased() != "NO_LIMIT" else { return nil }
 
         switch policy {
@@ -90,6 +93,10 @@ struct FlowBudgetUsage: Sendable, Equatable {
         case .effective:
             guard let value = effectiveLimit, Self.isUsableLimit(value) else { return nil }
             return (value, .effective)
+
+        case .custom:
+            guard let value = customLimit, Self.isUsableLimit(value) else { return nil }
+            return (value, .custom)
         }
     }
 
@@ -106,6 +113,13 @@ struct ResolvedFlowBudgetUsage: Sendable, Equatable {
     let isUnlimited: Bool
     let isLimitUnavailable: Bool
     let renewalDate: String
+}
+
+enum FlowRefreshResult: Sendable, Equatable {
+    case success(FlowBudgetUsage)
+    case expired
+    case failure
+    case notConfigured
 }
 
 /// Fetches and caches Flow Platform budget consumption.
@@ -180,32 +194,63 @@ enum FlowBudgetClient {
         return age >= max(ttl, 0)
     }
 
-    /// Performs the full auth + fetch flow. Returns nil on any failure (no Flow
-    /// token configured, decode failure, network error, non-200 response) — the
-    /// caller should keep whatever value it already had rather than clearing it.
+    /// Performs the full auth + fetch flow with an optional preferred API key.
+    @discardableResult
+    static func refresh(apiKey: String? = nil) async -> FlowRefreshResult {
+        guard let token = resolveAuthToken(preferredKey: apiKey) else {
+            return .notConfigured
+        }
+
+        guard let context = extractAuthContext(fromJWT: token) else {
+            return .failure
+        }
+
+        let (accessToken, isExpired) = await resolveAccessToken(context: context)
+        if isExpired {
+            return .expired
+        }
+        guard let accessToken else {
+            return .failure
+        }
+
+        var budgetResult = await fetchBudget(accessToken: accessToken)
+        if case .expired = budgetResult {
+            clearTokenCache()
+            let (newAccessToken, reAuthExpired) = await resolveAccessToken(context: context)
+            if reAuthExpired {
+                return .expired
+            }
+            if let newAccessToken {
+                budgetResult = await fetchBudget(accessToken: newAccessToken)
+            }
+        }
+
+        switch budgetResult {
+        case .success(let usage):
+            writeCache(usage)
+            async let _ = syncModelsCatalogIfNeeded(accessToken: accessToken)
+            return .success(usage)
+        case .expired:
+            clearTokenCache()
+            return .expired
+        case .failure:
+            return .failure
+        }
+    }
+
+    /// Convenience wrapper returning usage if successful, nil otherwise.
     static func refresh() async -> FlowBudgetUsage? {
-        guard let token = resolveAuthToken(),
-              let context = extractAuthContext(fromJWT: token),
-              let accessToken = await resolveAccessToken(context: context) else {
-            return nil
+        switch await refresh(apiKey: nil) {
+        case .success(let usage): return usage
+        default: return nil
         }
-
-        async let fetchedUsage = fetchBudget(accessToken: accessToken)
-        async let _ = syncModelsCatalogIfNeeded(accessToken: accessToken)
-
-        guard let usage = await fetchedUsage else {
-            return nil
-        }
-
-        writeCache(usage)
-        return usage
     }
 
     // MARK: - Auth token resolution
 
     /// GUI apps launched from Finder/login items don't inherit shell-exported
     /// env vars, so fall back to reading the same settings.json Claude Code uses.
-    static func resolveAuthToken() -> String? {
+    static func resolveInferredAuthToken() -> String? {
         if let env = ProcessInfo.processInfo.environment["ANTHROPIC_AUTH_TOKEN"], !env.isEmpty {
             return env
         }
@@ -220,6 +265,28 @@ enum FlowBudgetClient {
             return nil
         }
         return token
+    }
+
+    /// Resolves the auth token using the preferred key if provided and non-empty,
+    /// or falling back to the inferred token from environment or ~/.claude/settings.json.
+    static func resolveAuthToken(preferredKey: String? = nil) -> String? {
+        if let key = preferredKey?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty {
+            return key
+        }
+        return resolveInferredAuthToken()
+    }
+
+    static func isJWTExpired(_ token: String, now: Date = Date()) -> Bool {
+        let segments = token.split(separator: ".")
+        guard segments.count >= 2,
+              let payload = base64URLDecode(String(segments[1])),
+              let json = try? JSONSerialization.jsonObject(with: payload) as? [String: Any] else {
+            return false
+        }
+        if let exp = number(json["exp"]) {
+            return now.timeIntervalSince1970 >= exp
+        }
+        return false
     }
 
     static func extractAuthContext(fromJWT token: String) -> FlowAuthContext? {
@@ -246,25 +313,35 @@ enum FlowBudgetClient {
 
     // MARK: - Access token (cached until near expiry)
 
-    private static func resolveAccessToken(context: FlowAuthContext) async -> String? {
+    private enum AccessTokenFetchResult {
+        case success(token: String, expiresIn: Double)
+        case expired
+        case failure
+    }
+
+    private static func resolveAccessToken(context: FlowAuthContext) async -> (token: String?, isExpired: Bool) {
         let cacheKey = sha256(context.clientSecret)
 
         if let cached = readTokenCache(),
            cached.key == cacheKey,
            cached.expiresAt - Date().timeIntervalSince1970 > tokenExpiryMargin {
-            return cached.accessToken
+            return (cached.accessToken, false)
         }
 
-        guard let (token, expiresIn) = await requestAccessToken(context: context) else {
-            return nil
+        switch await requestAccessToken(context: context) {
+        case .success(let token, let expiresIn):
+            let expiresAt = Date().timeIntervalSince1970 + expiresIn
+            writeTokenCache(TokenCacheDTO(key: cacheKey, accessToken: token, expiresAt: expiresAt))
+            return (token, false)
+        case .expired:
+            clearTokenCache()
+            return (nil, true)
+        case .failure:
+            return (nil, false)
         }
-
-        let expiresAt = Date().timeIntervalSince1970 + expiresIn
-        writeTokenCache(TokenCacheDTO(key: cacheKey, accessToken: token, expiresAt: expiresAt))
-        return token
     }
 
-    private static func requestAccessToken(context: FlowAuthContext) async -> (token: String, expiresIn: Double)? {
+    private static func requestAccessToken(context: FlowAuthContext) async -> AccessTokenFetchResult {
         var request = URLRequest(url: authEngineURL)
         request.httpMethod = "POST"
         request.timeoutInterval = requestTimeout
@@ -274,30 +351,53 @@ enum FlowBudgetClient {
         request.httpBody = try? JSONSerialization.data(withJSONObject: ["clientSecret": context.clientSecret])
 
         guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let http = response as? HTTPURLResponse, http.statusCode == 200,
+              let http = response as? HTTPURLResponse else {
+            return .failure
+        }
+
+        if http.statusCode == 401 || http.statusCode == 403 {
+            return .expired
+        }
+
+        guard http.statusCode == 200,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let accessToken = json["access_token"] as? String else {
-            return nil
+            return .failure
         }
 
         let expiresIn = number(json["expires_in"]) ?? 3600
-        return (accessToken, expiresIn)
+        return .success(token: accessToken, expiresIn: expiresIn)
     }
 
     // MARK: - Budget consumption
 
-    private static func fetchBudget(accessToken: String) async -> FlowBudgetUsage? {
+    private enum BudgetFetchResult {
+        case success(FlowBudgetUsage)
+        case expired
+        case failure
+    }
+
+    private static func fetchBudget(accessToken: String) async -> BudgetFetchResult {
         var request = URLRequest(url: consumptionURL)
         request.timeoutInterval = requestTimeout
         request.setValue("application/json", forHTTPHeaderField: "accept")
         request.setValue(accessToken, forHTTPHeaderField: "FlowToken")
 
         guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            return nil
+              let http = response as? HTTPURLResponse else {
+            return .failure
         }
 
-        return parseBudgetResponse(data)
+        if http.statusCode == 401 || http.statusCode == 403 {
+            return .expired
+        }
+
+        guard http.statusCode == 200,
+              let usage = parseBudgetResponse(data) else {
+            return .failure
+        }
+
+        return .success(usage)
     }
 
     // MARK: - Models catalog sync
@@ -430,6 +530,14 @@ enum FlowBudgetClient {
         guard let data = try? JSONEncoder().encode(dto) else { return }
         try? data.write(to: tokenCacheFile, options: .atomic)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tokenCacheFile.path)
+    }
+
+    static func clearTokenCache() {
+        try? FileManager.default.removeItem(at: tokenCacheFile)
+    }
+
+    static func clearBudgetCache() {
+        try? FileManager.default.removeItem(at: budgetCacheFile)
     }
 
     private static func sha256(_ string: String) -> String {

@@ -44,13 +44,18 @@ struct KillTheBillApp: App {
         .menuBarExtraStyle(.window)
     }
 
+    private var isFlowExpired: Bool {
+        settings.flowEnabled && store.isFlowKeyExpired
+    }
+
     private var menuBarLabel: some View {
         HStack(spacing: 4) {
-            Image(systemName: "brain.fill")
+            Image(systemName: isFlowExpired ? "exclamationmark.triangle.fill" : "brain.fill")
                 .symbolRenderingMode(.hierarchical)
-            Text(settings.showEvents ? eventsLabel : costLabel)
+                .foregroundStyle(isFlowExpired ? .red : (settings.showEvents ? eventsColor : costColor))
+            Text(isFlowExpired ? l10n.text("menubar.flow_expired") : (settings.showEvents ? eventsLabel : costLabel))
                 .font(.system(.caption, design: .monospaced, weight: .medium))
-                .foregroundStyle(settings.showEvents ? eventsColor : costColor)
+                .foregroundStyle(isFlowExpired ? .red : (settings.showEvents ? eventsColor : costColor))
         }
     }
 

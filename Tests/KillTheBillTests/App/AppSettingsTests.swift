@@ -19,6 +19,7 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(settings.trackedHarnesses, Set(Harness.allCases))
         XCTAssertEqual(settings.language, .system)
         XCTAssertEqual(settings.overviewRanking, .monthly)
+        XCTAssertFalse(AppSettings.flowCacheTTLPresets.isEmpty)
     }
 
     @MainActor
@@ -28,6 +29,7 @@ final class AppSettingsTests: XCTestCase {
         fixture.defaults.set(true, forKey: "showEvents")
         fixture.defaults.set(9_000, forKey: "monthlyEventLimit")
         fixture.defaults.set(250.0, forKey: "monthlyCostLimit")
+        fixture.defaults.set("custom-key-123", forKey: "flowApiKey")
 
         let settings = AppSettings(defaults: fixture.defaults)
 
@@ -35,6 +37,7 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertTrue(settings.showEvents)
         XCTAssertEqual(settings.monthlyEventLimit, 9_000)
         XCTAssertEqual(settings.monthlyCostLimit, 250)
+        XCTAssertEqual(settings.flowApiKey, "custom-key-123")
     }
 
     @MainActor
@@ -45,10 +48,11 @@ final class AppSettingsTests: XCTestCase {
         settings.launchAtLogin = false
         settings.showEvents = true
         settings.flowEnabled = false
+        settings.flowApiKey = "test-token"
         settings.flowCacheTTL = 300
         settings.monthlyEventLimit = 12_000
         settings.monthlyCostLimit = 500
-        settings.flowLimitPolicy = .individual
+        settings.flowLimitPolicy = .custom
         settings.trackedHarnesses = [.codex]
         settings.language = .portugueseBrazil
         settings.overviewRanking = .daily
@@ -56,6 +60,8 @@ final class AppSettingsTests: XCTestCase {
         let restored = AppSettings(defaults: fixture.defaults)
 
         XCTAssertEqual(restored.snapshot, settings.snapshot)
+        XCTAssertEqual(restored.flowApiKey, "test-token")
+        XCTAssertEqual(restored.flowLimitPolicy, .custom)
         XCTAssertEqual(restored.trackedHarnesses, [.codex])
         XCTAssertEqual(restored.language, .portugueseBrazil)
         XCTAssertEqual(restored.overviewRanking, .daily)

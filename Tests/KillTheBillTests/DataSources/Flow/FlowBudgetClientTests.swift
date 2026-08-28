@@ -74,6 +74,11 @@ final class FlowBudgetClientTests: XCTestCase {
         let effective = usage.resolved(for: .effective)
         assertDoubleEqual(try XCTUnwrap(effective.limit), 400)
         assertDoubleEqual(effective.percentage, 30)
+
+        let custom = usage.resolved(for: .custom, customLimit: 600)
+        assertDoubleEqual(try XCTUnwrap(custom.limit), 600)
+        assertDoubleEqual(custom.percentage, 20)
+        XCTAssertEqual(custom.limitSource, .custom)
     }
 
     func testTenantPolicyFallsBackToLegacyLimitProperty() throws {
@@ -207,6 +212,11 @@ final class FlowBudgetClientTests: XCTestCase {
         let token = "header.\(base64URLEncode(payloadData)).signature"
 
         XCTAssertNil(FlowBudgetClient.extractAuthContext(fromJWT: token))
+    }
+
+    func testResolveAuthTokenPrefersExplicitKey() {
+        XCTAssertEqual(FlowBudgetClient.resolveAuthToken(preferredKey: "my-key"), "my-key")
+        XCTAssertEqual(FlowBudgetClient.resolveAuthToken(preferredKey: "   "), FlowBudgetClient.resolveInferredAuthToken())
     }
 
     func testFlowModelsDecodingFromDifferentNestingLevels() throws {

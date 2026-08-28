@@ -38,6 +38,29 @@ struct AppLocalizer {
         )
     }
 
+    func duration(_ seconds: TimeInterval) -> String {
+        let total = max(Int(seconds.rounded()), 0)
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let remainingSeconds = total % 60
+
+        if hours > 0 {
+            if minutes == 0 {
+                return plural(singular: "duration.hours.one", plural: "duration.hours", count: hours)
+            }
+            return "\(plural(singular: "duration.hours.one", plural: "duration.hours", count: hours)) \(plural(singular: "duration.minutes.one", plural: "duration.minutes", count: minutes))"
+        }
+
+        if minutes > 0 {
+            if remainingSeconds == 0 {
+                return plural(singular: "duration.minutes.one", plural: "duration.minutes", count: minutes)
+            }
+            return "\(plural(singular: "duration.minutes.one", plural: "duration.minutes", count: minutes)) \(plural(singular: "duration.seconds.one", plural: "duration.seconds", count: remainingSeconds))"
+        }
+
+        return plural(singular: "duration.seconds.one", plural: "duration.seconds", count: remainingSeconds)
+    }
+
     private var localizedBundle: Bundle {
         // SwiftPM's resource bundler lowercases .lproj directory names
         // (e.g. pt-BR.lproj -> pt-br.lproj), so look up by the lowercased

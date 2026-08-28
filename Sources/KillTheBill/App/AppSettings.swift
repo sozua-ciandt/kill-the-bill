@@ -25,6 +25,7 @@ enum FlowLimitPolicy: String, CaseIterable, Codable, Identifiable, Sendable {
     case individual
     case tenant
     case effective
+    case custom
 
     var id: String { rawValue }
 }
@@ -50,6 +51,7 @@ struct SettingsSnapshot: Equatable, Sendable {
     let showEvents: Bool
     let flowEnabled: Bool
     let flowCacheTTL: TimeInterval
+    let flowApiKey: String
     let monthlyEventLimit: Int
     let monthlyCostLimit: Double
     let flowLimitPolicy: FlowLimitPolicy
@@ -62,7 +64,21 @@ struct SettingsSnapshot: Equatable, Sendable {
 @MainActor
 final class AppSettings {
     static let defaultFlowCacheTTL: TimeInterval = 60
-    static let flowCacheTTLRange: ClosedRange<TimeInterval> = 30...3_600
+    static let flowCacheTTLRange: ClosedRange<TimeInterval> = 15...3_600
+    static let flowCacheTTLPresets: [TimeInterval] = [
+        15,
+        30,
+        60,
+        120,
+        300,
+        600,
+        900,
+        1200,
+        1500,
+        1800,
+        2700,
+        3600
+    ]
 
     private static let currentSchemaVersion = 1
 
@@ -73,6 +89,7 @@ final class AppSettings {
         static let showEvents = "showEvents"
         static let flowEnabled = "flowEnabled"
         static let flowCacheTTL = "flowCacheTTL"
+        static let flowApiKey = "flowApiKey"
         static let monthlyEventLimit = "monthlyEventLimit"
         static let monthlyCostLimit = "monthlyCostLimit"
         static let flowLimitPolicy = "flowLimitPolicy"
@@ -97,6 +114,10 @@ final class AppSettings {
 
     var flowEnabled: Bool {
         didSet { defaults.set(flowEnabled, forKey: Key.flowEnabled) }
+    }
+
+    var flowApiKey: String {
+        didSet { defaults.set(flowApiKey, forKey: Key.flowApiKey) }
     }
 
     private var storedFlowCacheTTL: TimeInterval
@@ -160,6 +181,7 @@ final class AppSettings {
             showEvents: showEvents,
             flowEnabled: flowEnabled,
             flowCacheTTL: flowCacheTTL,
+            flowApiKey: flowApiKey,
             monthlyEventLimit: monthlyEventLimit,
             monthlyCostLimit: monthlyCostLimit,
             flowLimitPolicy: flowLimitPolicy,
@@ -179,6 +201,16 @@ final class AppSettings {
         launchAtLogin = defaults.bool(forKey: Key.launchAtLogin)
         showEvents = defaults.bool(forKey: Key.showEvents)
         flowEnabled = defaults.bool(forKey: Key.flowEnabled)
+
+        if let storedApiKey = defaults.string(forKey: Key.flowApiKey) {
+            flowApiKey = storedApiKey
+        } else {
+            let inferred = FlowBudgetClient.resolveInferredAuthToken() ?? ""
+            flowApiKey = inferred
+            if !inferred.isEmpty {
+                defaults.set(inferred, forKey: Key.flowApiKey)
+            }
+        }
         storedFlowCacheTTL = Self.clampedFlowCacheTTL(
             defaults.double(forKey: Key.flowCacheTTL)
         )

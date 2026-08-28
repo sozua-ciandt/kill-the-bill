@@ -146,6 +146,11 @@ private struct OverviewView: View {
             header
             Divider()
 
+            if settings.flowEnabled && store.isFlowKeyExpired {
+                flowExpiredCallout
+                Divider()
+            }
+
             if settings.showEvents {
                 monthlyEventsSection
             } else {
@@ -588,6 +593,42 @@ private struct OverviewView: View {
         .padding(9)
         .background(Color.blue.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private var flowExpiredCallout: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                Text(l10n.text("overview.flow_expired.title"))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.red)
+                Spacer()
+            }
+
+            Text(l10n.text("overview.flow_expired.message"))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button(action: onOpenSettings) {
+                HStack(spacing: 4) {
+                    Image(systemName: "gearshape.fill")
+                    Text(l10n.text("overview.flow_expired.action"))
+                }
+                .font(.caption2.weight(.medium))
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .tint(.red)
+        }
+        .padding(10)
+        .background(Color.red.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.red.opacity(0.25), lineWidth: 1)
+        }
     }
 
     // MARK: Footer

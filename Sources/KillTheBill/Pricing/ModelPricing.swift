@@ -8,20 +8,41 @@ struct TokenPricing: Equatable, Sendable {
     let cacheRead: Double
 }
 
-struct ModelPricing: Sendable {
-    private let models: [String: TokenPricing]
+struct ModelPricing: Equatable, Sendable {
+    let models: [String: TokenPricing]
 
     init(models: [String: TokenPricing]) {
         self.models = models
     }
 
-    static func load() -> ModelPricing {
-        var models = ModelsDevPricingCatalog.loadPricing()
-        let flowPricing = FlowPricingCatalog.loadPricing()
+    private nonisolated(unsafe) static var cachedInstance: ModelPricing?
+    private static let lock = NSLock()
+
+    static func load(forceReload: Bool = false) -> ModelPricing {
+        lock.lock()
+        defer { lock.unlock() }
+
+        if !forceReload, let cachedInstance {
+            return cachedInstance
+        }
+
+        var models = ModelsDevPricingCatalog.loadPricing(forceReload: forceReload)
+        let flowPricing = FlowPricingCatalog.loadPricing(forceReload: forceReload)
         for (key, pricing) in flowPricing {
             models[key] = pricing
         }
-        return ModelPricing(models: models)
+        let instance = ModelPricing(models: models)
+        cachedInstance = instance
+        return instance
+    }
+
+    static func clearCache() {
+        lock.lock()
+        cachedInstance = nil
+        lock.unlock()
+
+        ModelsDevPricingCatalog.clearCache()
+        FlowPricingCatalog.clearCache()
     }
 
     func cost(model rawModel: String, input: Int, output: Int, cacheWrite: Int, cacheRead: Int) -> Double? {

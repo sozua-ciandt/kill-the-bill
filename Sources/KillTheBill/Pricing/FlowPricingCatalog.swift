@@ -99,8 +99,13 @@ enum FlowPricingCatalog {
         return age < 0 || age >= maxAge
     }
 
-    static func loadPricing() -> [String: TokenPricing] {
-        if let data = cachedCatalogData(maxAge: cacheMaxAge),
+    static func clearCache() {
+        try? FileManager.default.removeItem(at: cacheFile)
+    }
+
+    static func loadPricing(forceReload: Bool = false) -> [String: TokenPricing] {
+        if !forceReload,
+           let data = cachedCatalogData(maxAge: cacheMaxAge),
            let pricing = decodedPricing(from: data),
            !pricing.isEmpty {
             return pricing

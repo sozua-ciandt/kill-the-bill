@@ -46,8 +46,13 @@ enum ModelsDevPricingCatalog {
         ]
     }
 
-    static func loadPricing() -> [String: TokenPricing] {
-        if let data = cachedCatalogData(maxAge: cacheMaxAge),
+    static func clearCache() {
+        try? FileManager.default.removeItem(at: cacheFile)
+    }
+
+    static func loadPricing(forceReload: Bool = false) -> [String: TokenPricing] {
+        if !forceReload,
+           let data = cachedCatalogData(maxAge: cacheMaxAge),
            let pricing = decodedPricing(from: data) {
             return pricing
         }
@@ -209,7 +214,21 @@ enum ModelsDevPricingCatalog {
     }
 
     private static func remoteCatalogData() -> Data? {
-        try? Data(contentsOf: catalogURL)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 5.0
+        configuration.timeoutIntervalForResource = 5.0
+        let session = URLSession(configuration: configuration)
+        nonisolated(unsafe) var result: Data?
+        let semaphore = DispatchSemaphore(value: 0)
+        let task = session.dataTask(with: catalogURL) { data, response, error in
+            if let http = response as? HTTPURLResponse, http.statusCode == 200 {
+                result = data
+            }
+            semaphore.signal()
+        }
+        task.resume()
+        _ = semaphore.wait(timeout: .now() + 5.0)
+        return result
     }
 
     private static func cacheValidatedCatalog(_ data: Data) {

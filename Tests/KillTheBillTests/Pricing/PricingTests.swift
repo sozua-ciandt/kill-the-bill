@@ -327,4 +327,14 @@ final class PricingTests: XCTestCase {
         XCTAssertNotNil(cost)
         assertDoubleEqual(cost!, 0.75)
     }
+
+    func testModelPricingCachingAndClearCache() {
+        let p1 = ModelPricing.load()
+        let p2 = ModelPricing.load()
+        XCTAssertEqual(p1.models, p2.models)
+
+        ModelPricing.clearCache()
+        let p3 = ModelPricing.load()
+        XCTAssertEqual(p1.models, p3.models)
+    }
 }

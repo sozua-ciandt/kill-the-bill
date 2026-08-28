@@ -15,6 +15,7 @@ final class UsageStore {
     private(set) var usage: DailyUsage = DailyUsage()
     private(set) var sources: LogScanner.DiscoveredSources?
     private(set) var isLoading: Bool = false
+    private(set) var isFlowKeyExpired: Bool = false
     private(set) var lastRefreshed: Date = .distantPast
     private(set) var sessions: [UsageSession] = []
     private(set) var isLoadingSessions: Bool = false
@@ -71,10 +72,11 @@ final class UsageStore {
 
         refreshTask = Task { [weak self] in
             guard let self else { return }
-            let (parsed, sources) = await Self.loadUsage(settings: snapshot)
+            let (parsed, sources, isExpired) = await Self.loadUsage(settings: snapshot)
             guard !Task.isCancelled, self.refreshGeneration == generation else { return }
             self.usage = parsed
             self.sources = sources
+            self.isFlowKeyExpired = isExpired
             self.isLoading = false
             self.lastRefreshed = Date()
             self.refreshTask = nil
@@ -134,6 +136,19 @@ final class UsageStore {
         loadSessions(query: query)
     }
 
+    func clearLocalCaches() {
+        ModelPricing.clearCache()
+        SessionFragmentCache.shared.clear()
+        FlowBudgetClient.clearTokenCache()
+        FlowBudgetClient.clearBudgetCache()
+        let cacheDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".kill-the-bill")
+            .appendingPathComponent("cache")
+        try? FileManager.default.removeItem(at: cacheDir)
+        refresh()
+        reloadSessionsIfLoaded()
+    }
+
     private func reloadSessionsAfterHarnessChange(settings snapshot: SettingsSnapshot) {
         guard let query = requestedSessionQuery ?? loadedSessionQuery else { return }
         startSessionLoad(
@@ -145,7 +160,7 @@ final class UsageStore {
 
     private nonisolated static func loadUsage(
         settings: SettingsSnapshot
-    ) async -> (DailyUsage, LogScanner.DiscoveredSources) {
+    ) async -> (DailyUsage, LogScanner.DiscoveredSources, isFlowKeyExpired: Bool) {
         let sources = LogScanner.discoverSources(trackedHarnesses: settings.trackedHarnesses)
         let pricing = ModelPricing.load()
         let calendar = Calendar.current
@@ -154,28 +169,26 @@ final class UsageStore {
         let todayFilter = calendar.dateComponents([.year, .month, .day], from: now)
         let monthFilter = calendar.dateComponents([.year, .month], from: now)
 
-        let todayClaudeFiles = LogScanner.findTodayClaudeTranscripts(from: sources.claudeTranscriptDirs)
-        let monthClaudeFiles = LogScanner.findThisMonthClaudeTranscripts(from: sources.claudeTranscriptDirs)
-        let todayCodexFiles = LogScanner.findTodayCodexSessions(from: sources.codexSessionRoot)
-        let monthCodexFiles = LogScanner.findThisMonthCodexSessions(from: sources.codexSessionRoot)
+        let claudeScan = LogScanner.scanClaudeTranscripts(from: sources.claudeTranscriptDirs)
+        let codexScan = LogScanner.scanCodexSessions(from: sources.codexSessionRoot)
 
-        let claudeToday = ClaudeLogParser.parseTranscripts(
+        let (claudeToday, claudeMonth) = ClaudeLogParser.parseTranscriptsOverview(
             dirs: sources.claudeTranscriptDirs,
-            files: todayClaudeFiles,
+            files: claudeScan.thisMonth,
             pricing: pricing,
-            dateFilter: todayFilter
-        )
-        let claudeMonth = ClaudeLogParser.parseTranscripts(
-            dirs: sources.claudeTranscriptDirs,
-            files: monthClaudeFiles,
-            pricing: pricing,
-            dateFilter: monthFilter
+            todayFilter: todayFilter,
+            monthFilter: monthFilter
         )
 
-        let codexToday = CodexLogParser.parseSessions(files: todayCodexFiles, pricing: pricing, dateFilter: todayFilter)
-        let codexMonth = CodexLogParser.parseSessions(files: monthCodexFiles, pricing: pricing, dateFilter: monthFilter)
-        let opencodeToday = OpenCodeDBMonitor.parseUsage(dbURL: sources.opencodeDB, pricing: pricing, dateFilter: todayFilter)
-        let opencodeMonth = OpenCodeDBMonitor.parseUsage(dbURL: sources.opencodeDB, pricing: pricing, dateFilter: monthFilter)
+        let codexToday = CodexLogParser.parseSessions(files: codexScan.today, pricing: pricing, dateFilter: todayFilter)
+        let codexMonth = CodexLogParser.parseSessions(files: codexScan.thisMonth, pricing: pricing, dateFilter: monthFilter)
+
+        let (opencodeToday, opencodeMonth) = OpenCodeDBMonitor.parseUsageOverview(
+            dbURL: sources.opencodeDB,
+            pricing: pricing,
+            todayFilter: todayFilter,
+            monthFilter: monthFilter
+        )
 
         let todayCombined = DailyUsage.combined([claudeToday, codexToday, opencodeToday])
         let monthCombined = DailyUsage.combined([claudeMonth, codexMonth, opencodeMonth])
@@ -185,16 +198,30 @@ final class UsageStore {
         // fallback (and continue to power today's cost, per-project, per-model
         // breakdowns unconditionally, regardless of Flow's availability).
         var flowUsage: FlowBudgetUsage?
+        var isFlowKeyExpired = false
         if settings.flowEnabled {
             flowUsage = FlowBudgetClient.currentUsage()
             if FlowBudgetClient.isStale(flowUsage, ttl: settings.flowCacheTTL) {
-                flowUsage = await FlowBudgetClient.refresh() ?? flowUsage
+                let refreshResult = await FlowBudgetClient.refresh(apiKey: settings.flowApiKey)
+                switch refreshResult {
+                case .success(let usage):
+                    flowUsage = usage
+                    isFlowKeyExpired = false
+                case .expired:
+                    isFlowKeyExpired = true
+                    flowUsage = nil
+                case .failure, .notConfigured:
+                    isFlowKeyExpired = false
+                }
             }
         }
 
         var parsed = todayCombined
         if let flowUsage {
-            let resolved = flowUsage.resolved(for: settings.flowLimitPolicy)
+            let resolved = flowUsage.resolved(
+                for: settings.flowLimitPolicy,
+                customLimit: settings.monthlyCostLimit
+            )
             parsed.monthlyCostUSD = resolved.consumedUSD
             parsed.monthlyCostSource = .flow(
                 percentage: resolved.percentage,
@@ -231,7 +258,7 @@ final class UsageStore {
             return m
         }
 
-        return (parsed, sources)
+        return (parsed, sources, isFlowKeyExpired)
     }
 
     private nonisolated static func loadSessionUsage(
@@ -242,8 +269,8 @@ final class UsageStore {
         let sources = LogScanner.discoverSources(trackedHarnesses: settings.trackedHarnesses)
         let pricing = ModelPricing.load()
         guard !Task.isCancelled else { return [] }
-        let claudeFiles = LogScanner.findAllClaudeTranscripts(from: sources.claudeTranscriptDirs)
-        let codexFiles = LogScanner.findAllCodexSessions(from: sources.codexSessionRoot)
+        let claudeFiles = LogScanner.findClaudeTranscripts(from: sources.claudeTranscriptDirs, interval: interval)
+        let codexFiles = LogScanner.findCodexSessions(from: sources.codexSessionRoot, interval: interval)
         guard !Task.isCancelled else { return [] }
 
         let parsed = SessionLogParser.parse(

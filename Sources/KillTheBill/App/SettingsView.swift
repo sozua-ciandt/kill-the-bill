@@ -43,6 +43,8 @@ struct SettingsView: View {
     @Bindable var launchAtLoginManager: LaunchAtLoginManager
 
     @State private var selection: SettingsCategory? = .general
+    @State private var isShowingFlowApiKey = false
+    @State private var isCacheCleared = false
 
     private var l10n: AppLocalizer { AppLocalizer(language: settings.language) }
 
@@ -88,7 +90,7 @@ struct SettingsView: View {
                         Text(l10n.text("settings.language.pt_br")).tag(AppLanguage.portugueseBrazil)
                     }
                     .labelsHidden()
-                    .frame(width: 190)
+                    .frame(width: 220, alignment: .trailing)
                 }
 
                 cardDivider
@@ -226,7 +228,7 @@ struct SettingsView: View {
                         Text(l10n.text("settings.overview_ranking.daily")).tag(OverviewRankingPeriod.daily)
                     }
                     .labelsHidden()
-                    .frame(width: 190)
+                    .frame(width: 220, alignment: .trailing)
                 }
 
                 cardDivider
@@ -268,19 +270,49 @@ struct SettingsView: View {
 
                 cardDivider
 
-                settingRow(title: l10n.text("settings.flow.ttl")) {
-                    VStack(alignment: .trailing, spacing: 4) {
-                        Text(l10n.format("settings.flow.ttl.value", Int(settings.flowCacheTTL)))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Slider(
-                            value: $settings.flowCacheTTL,
-                            in: AppSettings.flowCacheTTLRange,
-                            step: 30
-                        )
-                        .frame(width: 210)
-                        .accessibilityValue(l10n.format("settings.flow.ttl.value", Int(settings.flowCacheTTL)))
+                settingRow(
+                    title: l10n.text("settings.flow.api_key"),
+                    description: l10n.text("settings.flow.api_key.description")
+                ) {
+                    HStack(spacing: 6) {
+                        if isShowingFlowApiKey {
+                            TextField(l10n.text("settings.flow.api_key.placeholder"), text: $settings.flowApiKey)
+                                .textFieldStyle(.roundedBorder)
+                        } else {
+                            SecureField(l10n.text("settings.flow.api_key.placeholder"), text: $settings.flowApiKey)
+                                .textFieldStyle(.roundedBorder)
+                        }
+
+                        Button {
+                            isShowingFlowApiKey.toggle()
+                        } label: {
+                            Image(systemName: isShowingFlowApiKey ? "eye.slash" : "eye")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help(l10n.text(isShowingFlowApiKey ? "settings.flow.api_key.hide" : "settings.flow.api_key.show"))
                     }
+                    .frame(width: 240, alignment: .trailing)
+                }
+                .disabled(!settings.flowEnabled)
+                .onChange(of: settings.flowApiKey) { _, _ in
+                    FlowBudgetClient.clearTokenCache()
+                    store.refresh()
+                }
+
+                cardDivider
+
+                settingRow(
+                    title: l10n.text("settings.flow.ttl"),
+                    description: l10n.text("settings.flow.ttl.description")
+                ) {
+                    Picker("", selection: $settings.flowCacheTTL) {
+                        ForEach(AppSettings.flowCacheTTLPresets, id: \.self) { seconds in
+                            Text(l10n.duration(seconds)).tag(seconds)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 240, alignment: .trailing)
                 }
                 .disabled(!settings.flowEnabled)
 
@@ -295,9 +327,10 @@ struct SettingsView: View {
                         Text(l10n.text("settings.flow.limit.individual")).tag(FlowLimitPolicy.individual)
                         Text(l10n.text("settings.flow.limit.tenant")).tag(FlowLimitPolicy.tenant)
                         Text(l10n.text("settings.flow.limit.effective")).tag(FlowLimitPolicy.effective)
+                        Text(l10n.text("settings.flow.limit.custom")).tag(FlowLimitPolicy.custom)
                     }
                     .labelsHidden()
-                    .frame(width: 210)
+                    .frame(width: 240, alignment: .trailing)
                 }
                 .disabled(!settings.flowEnabled)
                 .onChange(of: settings.flowLimitPolicy) { _, _ in store.refresh() }
@@ -363,6 +396,26 @@ struct SettingsView: View {
                 }
 
                 settingsCard {
+                    settingRow(
+                        title: l10n.text("settings.about.cache"),
+                        description: l10n.text("settings.about.cache.description")
+                    ) {
+                        HStack(spacing: 8) {
+                            if isCacheCleared {
+                                Label(l10n.text("settings.about.cache.cleared"), systemImage: "checkmark")
+                                    .font(.caption)
+                                    .foregroundStyle(.green)
+                            }
+                            Button(l10n.text("settings.about.cache.clear")) {
+                                store.clearLocalCaches()
+                                isCacheCleared = true
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                    isCacheCleared = false
+                                }
+                            }
+                        }
+                    }
+                    cardDivider
                     settingRow(title: l10n.text("settings.about.pricing")) {
                         Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
                     }

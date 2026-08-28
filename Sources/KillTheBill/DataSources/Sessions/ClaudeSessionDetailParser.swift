@@ -7,13 +7,14 @@ enum ClaudeSessionDetailParser {
         pricing: ModelPricing,
         interval: DateInterval?
     ) -> [ParsedSessionFragment] {
-        files.map { file in
-            parseFile(
-                file,
-                identity: fileIdentity(for: file, transcriptDirs: transcriptDirs),
-                pricing: pricing,
-                interval: interval
-            )
+        files.compactMap { file in
+            let base = SessionFragmentCache.shared.baseFragment(for: file) {
+                parseFile(
+                    file,
+                    identity: fileIdentity(for: file, transcriptDirs: transcriptDirs)
+                )
+            }
+            return base?.slice(pricing: pricing, interval: interval)
         }
     }
 
@@ -85,11 +86,9 @@ enum ClaudeSessionDetailParser {
 
     private static func parseFile(
         _ file: URL,
-        identity: FileIdentity,
-        pricing: ModelPricing,
-        interval: DateInterval?
-    ) -> ParsedSessionFragment {
-        var fragment = ParsedSessionFragment(
+        identity: FileIdentity
+    ) -> BaseSessionFragment {
+        var base = BaseSessionFragment(
             harness: .claudeCode,
             id: identity.id,
             parentID: identity.isSubagent ? identity.rootID : nil,
@@ -106,22 +105,22 @@ enum ClaudeSessionDetailParser {
         SessionJSONLineReader.forEachObject(at: file) { entry in
             let type = sessionString(entry["type"])
             let date = sessionDate(entry["timestamp"])
-            fragment.observeLifetimeDate(date)
+            base.observeLifetimeDate(date)
 
-            if fragment.repositoryPath == nil {
-                fragment.repositoryPath = sessionString(entry["cwd"])
+            if base.repositoryPath == nil {
+                base.repositoryPath = sessionString(entry["cwd"])
             }
-            if fragment.gitBranch == nil {
-                fragment.gitBranch = sessionString(entry["gitBranch"])
+            if base.gitBranch == nil {
+                base.gitBranch = sessionString(entry["gitBranch"])
             }
-            if fragment.isSubagent, fragment.name == nil {
-                fragment.name = sessionString(entry["attributionAgent"])
+            if base.isSubagent, base.name == nil {
+                base.name = sessionString(entry["attributionAgent"])
             }
 
             switch type {
             case "ai-title":
-                if fragment.title == nil {
-                    fragment.title = sanitizedSessionPreview(sessionString(entry["aiTitle"]), limit: 100)
+                if base.title == nil {
+                    base.title = sanitizedSessionPreview(sessionString(entry["aiTitle"]), limit: 100)
                 }
 
             case "last-prompt":
@@ -138,19 +137,13 @@ enum ClaudeSessionDetailParser {
                     if seenUsageIDs.insert(usageID).inserted {
                         let rawModel = sessionString(message["model"]) ?? "unknown"
                         let tokens = claudeTokens(from: usageObject)
-                        let cost = pricing.cost(
-                            model: rawModel,
-                            input: tokens.inputTokens,
-                            output: tokens.outputTokens,
-                            cacheWrite: tokens.cacheWriteTokens,
-                            cacheRead: tokens.cacheReadTokens
-                        )
-                        fragment.addInvocation(
-                            model: ModelPricing.normalizeModel(rawModel),
-                            tokens: tokens,
-                            costUSD: cost,
-                            at: date,
-                            interval: interval
+                        base.invocations.append(
+                            BaseSessionEventInvocation(
+                                rawModel: rawModel,
+                                normalizedModel: ModelPricing.normalizeModel(rawModel),
+                                tokens: tokens,
+                                date: date
+                            )
                         )
                     }
                 }
@@ -168,13 +161,14 @@ enum ClaudeSessionDetailParser {
                         ?? "\(messageID ?? entryUUID ?? "message")-tool-\(index)-\(anonymousToolIndex)"
                     guard seenToolIDs.insert(toolID).inserted else { continue }
                     let mcp = sessionMCPIdentity(fromClaudeToolName: name)
-                    fragment.addToolCall(
-                        id: toolID,
-                        name: name,
-                        mcpServer: mcp?.server,
-                        mcpTool: mcp?.tool,
-                        at: date,
-                        interval: interval
+                    base.toolCalls.append(
+                        BaseSessionEventToolCall(
+                            id: toolID,
+                            name: name,
+                            mcpServer: mcp?.server,
+                            mcpTool: mcp?.tool,
+                            date: date
+                        )
                     )
                 }
 
@@ -182,9 +176,7 @@ enum ClaudeSessionDetailParser {
                 parseUserEntry(
                     entry,
                     date: date,
-                    interval: interval,
-                    pricing: pricing,
-                    fragment: &fragment
+                    base: &base
                 )
 
             default:
@@ -192,20 +184,18 @@ enum ClaudeSessionDetailParser {
             }
         }
 
-        if fragment.preview == nil { fragment.preview = lastPromptCandidate }
-        if fragment.startedAt == nil, let fallbackDate = sessionFileModificationDate(file) {
-            fragment.startedAt = fallbackDate
-            fragment.lastActivityAt = fallbackDate
+        if base.preview == nil { base.preview = lastPromptCandidate }
+        if base.startedAt == nil, let fallbackDate = sessionFileModificationDate(file) {
+            base.startedAt = fallbackDate
+            base.lastActivityAt = fallbackDate
         }
-        return fragment
+        return base
     }
 
     private static func parseUserEntry(
         _ entry: SessionJSONObject,
         date: Date?,
-        interval: DateInterval?,
-        pricing: ModelPricing,
-        fragment: inout ParsedSessionFragment
+        base: inout BaseSessionFragment
     ) {
         guard let message = sessionObject(entry["message"]) else { return }
         let isMeta = sessionBool(entry["isMeta"])
@@ -223,12 +213,14 @@ enum ClaudeSessionDetailParser {
                 switch sessionString(block["type"]) {
                 case "tool_result":
                     guard let callID = sessionString(block["tool_use_id"]) else { continue }
-                    fragment.addToolResult(
-                        callID: callID,
-                        payload: block["content"],
-                        isError: sessionBool(block["is_error"]),
-                        at: date,
-                        interval: interval
+                    let payloadEstimate = estimatedSessionResultTokens(from: block["content"])
+                    base.toolResults.append(
+                        BaseSessionEventToolResult(
+                            callID: callID,
+                            payloadEstimate: payloadEstimate,
+                            isError: sessionBool(block["is_error"]),
+                            date: date
+                        )
                     )
                 case "text":
                     if let text = sessionString(block["text"]) { textParts.append(text) }
@@ -244,8 +236,13 @@ enum ClaudeSessionDetailParser {
 
         if !isMeta, hasHumanContent {
             let turnID = sessionString(entry["promptId"]) ?? sessionString(entry["uuid"])
-            fragment.addHumanTurn(id: turnID, at: date, interval: interval)
-            if fragment.preview == nil { fragment.preview = humanText }
+            base.humanTurns.append(
+                BaseSessionEventHumanTurn(
+                    id: turnID,
+                    date: date
+                )
+            )
+            if base.preview == nil { base.preview = humanText }
         }
 
         guard let result = sessionObject(entry["toolUseResult"]),
@@ -254,44 +251,32 @@ enum ClaudeSessionDetailParser {
             return
         }
 
-        fragment.spawnedAgentIDs.insert(agentID)
-        guard sessionIncludes(date, in: interval),
-              let usageObject = sessionObject(result["usage"]) else { return }
+        base.spawnedAgentIDs.insert(agentID)
+        guard let usageObject = sessionObject(result["usage"]) else { return }
 
         let rawModel = sessionString(result["resolvedModel"])
             ?? sessionString(result["model"])
             ?? "unknown"
         let tokens = claudeTokens(from: usageObject)
-        let cost = pricing.cost(
-            model: rawModel,
-            input: tokens.inputTokens,
-            output: tokens.outputTokens,
-            cacheWrite: tokens.cacheWriteTokens,
-            cacheRead: tokens.cacheReadTokens
-        )
         let invocationCount = max(sessionInt(usageObject["iterations"]), 1)
-        var usage = SessionUsage(
-            tokens: tokens,
-            pricedCostUSD: cost ?? 0,
-            modelInvocationCount: invocationCount,
-            unpricedModelInvocationCount: cost == nil ? invocationCount : 0
-        )
-        if tokens.reportedTotalTokens == 0 && sessionInt(result["totalTokens"]) > 0 {
-            usage.tokens.totalOnlyTokens = sessionInt(result["totalTokens"])
-        }
+        let totalTokens = (tokens.reportedTotalTokens == 0 && sessionInt(result["totalTokens"]) > 0)
+            ? sessionInt(result["totalTokens"])
+            : 0
 
-        fragment.agentSummaries[agentID] = ParsedAgentSummary(
-            id: agentID,
-            name: sessionString(result["description"]),
-            kind: sessionString(result["agentType"]),
-            status: sessionString(result["status"]),
-            timestamp: date,
-            usage: usage,
-            modelUsage: SessionModelUsage(
-                id: ModelPricing.normalizeModel(rawModel),
-                usage: usage
-            ),
-            toolCallCount: sessionInt(result["totalToolUseCount"])
+        base.agentSummaries.append(
+            BaseSessionEventAgentSummary(
+                agentID: agentID,
+                name: sessionString(result["description"]),
+                kind: sessionString(result["agentType"]),
+                status: sessionString(result["status"]),
+                date: date,
+                rawModel: rawModel,
+                normalizedModel: ModelPricing.normalizeModel(rawModel),
+                tokens: tokens,
+                invocationCount: invocationCount,
+                toolCallCount: sessionInt(result["totalToolUseCount"]),
+                totalTokens: totalTokens
+            )
         )
     }
 

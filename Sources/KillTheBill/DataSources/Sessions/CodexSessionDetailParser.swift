@@ -6,15 +6,18 @@ enum CodexSessionDetailParser {
         pricing: ModelPricing,
         interval: DateInterval?
     ) -> [ParsedSessionFragment] {
-        files.map { parseFile($0, pricing: pricing, interval: interval) }
+        files.compactMap { file in
+            let base = SessionFragmentCache.shared.baseFragment(for: file) {
+                parseFile(file)
+            }
+            return base?.slice(pricing: pricing, interval: interval)
+        }
     }
 
     private static func parseFile(
-        _ file: URL,
-        pricing: ModelPricing,
-        interval: DateInterval?
-    ) -> ParsedSessionFragment {
-        var fragment = ParsedSessionFragment(
+        _ file: URL
+    ) -> BaseSessionFragment {
+        var base = BaseSessionFragment(
             harness: .codex,
             id: file.deletingPathExtension().lastPathComponent,
             isSubagent: false,
@@ -40,29 +43,29 @@ enum CodexSessionDetailParser {
                 hasCanonicalSessionMetadata = true
                 ownHistoryStartOrdinal = optionalSessionInt(payload["subagent_history_start_ordinal"])
 
-                fragment.id = sessionString(payload["id"])
+                base.id = sessionString(payload["id"])
                     ?? sessionString(payload["session_id"])
-                    ?? fragment.id
-                fragment.parentID = sessionString(payload["parent_thread_id"])
-                fragment.repositoryPath = sessionString(payload["cwd"]) ?? fragment.repositoryPath
-                fragment.repositoryFallbackName = sessionRepositoryName(
-                    path: fragment.repositoryPath,
+                    ?? base.id
+                base.parentID = sessionString(payload["parent_thread_id"])
+                base.repositoryPath = sessionString(payload["cwd"]) ?? base.repositoryPath
+                base.repositoryFallbackName = sessionRepositoryName(
+                    path: base.repositoryPath,
                     fallback: "Codex"
                 )
-                fragment.name = sessionString(payload["agent_nickname"])
-                fragment.kind = codexSubagentKind(from: payload)
+                base.name = sessionString(payload["agent_nickname"])
+                base.kind = codexSubagentKind(from: payload)
 
                 if let threadSource = sessionString(payload["thread_source"]) {
-                    fragment.isSubagent = threadSource == "subagent"
+                    base.isSubagent = threadSource == "subagent"
                 } else {
-                    fragment.isSubagent = fragment.parentID != nil
+                    base.isSubagent = base.parentID != nil
                 }
 
                 if let git = sessionObject(payload["git"]) {
-                    fragment.gitBranch = sessionString(git["branch"])
+                    base.gitBranch = sessionString(git["branch"])
                 }
-                fragment.observeLifetimeDate(date)
-                fragment.observeLifetimeDate(sessionDate(payload["timestamp"]))
+                base.observeLifetimeDate(date)
+                base.observeLifetimeDate(sessionDate(payload["timestamp"]))
                 return
             }
 
@@ -72,41 +75,43 @@ enum CodexSessionDetailParser {
                 return
             }
 
-            fragment.observeLifetimeDate(date)
+            base.observeLifetimeDate(date)
 
             switch entryType {
             case "turn_context":
                 currentModel = sessionString(payload["model"]) ?? currentModel
-                fragment.repositoryPath = sessionString(payload["cwd"]) ?? fragment.repositoryPath
-                fragment.repositoryFallbackName = sessionRepositoryName(
-                    path: fragment.repositoryPath,
-                    fallback: fragment.repositoryFallbackName
+                base.repositoryPath = sessionString(payload["cwd"]) ?? base.repositoryPath
+                base.repositoryFallbackName = sessionRepositoryName(
+                    path: base.repositoryPath,
+                    fallback: base.repositoryFallbackName
                 )
 
             case "event_msg":
                 switch payloadType {
                 case "user_message":
-                    guard !fragment.isSubagent else { break }
+                    guard !base.isSubagent else { break }
                     anonymousTurnIndex += 1
                     let text = sessionString(payload["message"])
                     let turnID = sessionString(payload["client_id"])
                         ?? sessionString(entry["ordinal"])
                         ?? "user-\(anonymousTurnIndex)"
-                    fragment.addHumanTurn(id: turnID, at: date, interval: interval)
-                    if fragment.preview == nil {
-                        fragment.preview = sanitizedSessionPreview(text)
+                    base.humanTurns.append(
+                        BaseSessionEventHumanTurn(id: turnID, date: date)
+                    )
+                    if base.preview == nil {
+                        base.preview = sanitizedSessionPreview(text)
                     }
 
                 case "task_started":
-                    fragment.markSliceActivity(at: date, interval: interval)
+                    base.sliceActivities.append(BaseSessionEventSliceActivity(date: date))
 
                 case "task_complete":
-                    fragment.status = "completed"
-                    fragment.markSliceActivity(at: date, interval: interval)
+                    base.status = "completed"
+                    base.sliceActivities.append(BaseSessionEventSliceActivity(date: date))
 
                 case "turn_aborted":
-                    fragment.status = "aborted"
-                    fragment.markSliceActivity(at: date, interval: interval)
+                    base.status = "aborted"
+                    base.sliceActivities.append(BaseSessionEventSliceActivity(date: date))
 
                 case "token_count":
                     guard let info = sessionObject(payload["info"]),
@@ -114,22 +119,13 @@ enum CodexSessionDetailParser {
                         break
                     }
                     let tokens = codexTokens(from: usageObject)
-                    let hasDetailedUsage = tokens.knownTotalTokens > 0
-                    let cost = hasDetailedUsage
-                        ? pricing.cost(
-                            model: currentModel,
-                            input: tokens.inputTokens,
-                            output: tokens.outputTokens,
-                            cacheWrite: tokens.cacheWriteTokens,
-                            cacheRead: tokens.cacheReadTokens
+                    base.invocations.append(
+                        BaseSessionEventInvocation(
+                            rawModel: currentModel,
+                            normalizedModel: ModelPricing.normalizeProviderModel(currentModel),
+                            tokens: tokens,
+                            date: date
                         )
-                        : nil
-                    fragment.addInvocation(
-                        model: ModelPricing.normalizeProviderModel(currentModel),
-                        tokens: tokens,
-                        costUSD: cost,
-                        at: date,
-                        interval: interval
                     )
 
                 case "mcp_tool_call_end":
@@ -142,24 +138,27 @@ enum CodexSessionDetailParser {
                     let callID = sessionString(payload["call_id"])
                         ?? "mcp-\(anonymousToolIndex)"
                     let name = "mcp__\(server)__\(tool)"
-                    fragment.addToolCall(
-                        id: callID,
-                        name: name,
-                        mcpServer: server,
-                        mcpTool: tool,
-                        at: date,
-                        interval: interval
+                    base.toolCalls.append(
+                        BaseSessionEventToolCall(
+                            id: callID,
+                            name: name,
+                            mcpServer: server,
+                            mcpTool: tool,
+                            date: date
+                        )
                     )
 
                     let result = sessionObject(payload["result"])
                     let ok = result?["Ok"]
                     let error = result?["Err"]
-                    fragment.addToolResult(
-                        callID: callID,
-                        payload: ok ?? error ?? payload["result"],
-                        isError: error != nil,
-                        at: date,
-                        interval: interval
+                    let payloadEstimate = estimatedSessionResultTokens(from: ok ?? error ?? payload["result"])
+                    base.toolResults.append(
+                        BaseSessionEventToolResult(
+                            callID: callID,
+                            payloadEstimate: payloadEstimate,
+                            isError: error != nil,
+                            date: date
+                        )
                     )
 
                 default:
@@ -175,23 +174,26 @@ enum CodexSessionDetailParser {
                         ?? sessionString(payload["id"])
                         ?? "tool-\(anonymousToolIndex)"
                     let mcp = sessionMCPIdentity(fromClaudeToolName: name)
-                    fragment.addToolCall(
-                        id: callID,
-                        name: name,
-                        mcpServer: mcp?.server,
-                        mcpTool: mcp?.tool,
-                        at: date,
-                        interval: interval
+                    base.toolCalls.append(
+                        BaseSessionEventToolCall(
+                            id: callID,
+                            name: name,
+                            mcpServer: mcp?.server,
+                            mcpTool: mcp?.tool,
+                            date: date
+                        )
                     )
 
                 case "function_call_output", "custom_tool_call_output":
                     guard let callID = sessionString(payload["call_id"]) else { break }
-                    fragment.addToolResult(
-                        callID: callID,
-                        payload: payload["output"],
-                        isError: codexOutputIsError(payload["output"]),
-                        at: date,
-                        interval: interval
+                    let payloadEstimate = estimatedSessionResultTokens(from: payload["output"])
+                    base.toolResults.append(
+                        BaseSessionEventToolResult(
+                            callID: callID,
+                            payloadEstimate: payloadEstimate,
+                            isError: codexOutputIsError(payload["output"]),
+                            date: date
+                        )
                     )
 
                 case "web_search_call":
@@ -199,11 +201,14 @@ enum CodexSessionDetailParser {
                     let callID = sessionString(payload["call_id"])
                         ?? sessionString(payload["id"])
                         ?? "web-search-\(anonymousToolIndex)"
-                    fragment.addToolCall(
-                        id: callID,
-                        name: "web_search",
-                        at: date,
-                        interval: interval
+                    base.toolCalls.append(
+                        BaseSessionEventToolCall(
+                            id: callID,
+                            name: "web_search",
+                            mcpServer: nil,
+                            mcpTool: nil,
+                            date: date
+                        )
                     )
 
                 default:
@@ -215,11 +220,11 @@ enum CodexSessionDetailParser {
             }
         }
 
-        if fragment.startedAt == nil, let fallbackDate = sessionFileModificationDate(file) {
-            fragment.startedAt = fallbackDate
-            fragment.lastActivityAt = fallbackDate
+        if base.startedAt == nil, let fallbackDate = sessionFileModificationDate(file) {
+            base.startedAt = fallbackDate
+            base.lastActivityAt = fallbackDate
         }
-        return fragment
+        return base
     }
 
     private static func optionalSessionInt(_ value: Any?) -> Int? {
